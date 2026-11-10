@@ -12,11 +12,11 @@ from sklearn.cluster import AgglomerativeClustering
 
 def build_physical_matrices_sparse(m_vector, m_gs, Y_vector, d_dashpot, d_drag):
     """
-    构建 稀疏格式(Sparse) 的 M, D, L 矩阵，内存占用接近零。
+    Build the M, D, L matrices in sparse format, with near-zero memory usage.
     """
     n = len(m_vector)
     
-    # 1. 稀疏质量矩阵 M
+    # 1. Sparse mass matrix M
     M_sparse = sp.diags(m_vector, format='csr')
     
     u = m_gs[0]
@@ -26,17 +26,17 @@ def build_physical_matrices_sparse(m_vector, m_gs, Y_vector, d_dashpot, d_drag):
         u_v, v_v, Y_v = u[valid_mask], v[valid_mask], Y_vector[valid_mask]
     except:
         import pdb; pdb.set_trace()
-    # 2. 稀疏拉普拉斯矩阵 L
+    # 2. Sparse Laplacian matrix L
     rows = np.concatenate([u_v, v_v])
     cols = np.concatenate([v_v, u_v])
     vals = np.concatenate([-Y_v, -Y_v])
     
     L_sparse = sp.coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
-    # 计算对角线：每行的非对角线元素之和的相反数
+    # Compute the diagonal: negative of the sum of off-diagonal elements in each row
     diag_L = -np.asarray(L_sparse.sum(axis=1)).flatten()
     L_sparse.setdiag(diag_L + L_sparse.diagonal())
     
-    # 3. 稀疏阻尼矩阵 D
+    # 3. Sparse damping matrix D
     if d_dashpot > 0 and len(u_v) > 0:
         dash_vals = np.full(len(u_v) * 2, -d_dashpot, dtype=np.float64)
         D_sparse = sp.coo_matrix((dash_vals, (rows, cols)), shape=(n, n)).tocsr()
@@ -51,8 +51,8 @@ def build_physical_matrices_sparse(m_vector, m_gs, Y_vector, d_dashpot, d_drag):
 class FastAdaptiveNetworkReducer:
     def __init__(self, distance_threshold='auto', num_modes=100):
         """
-        :param distance_threshold: 聚类阈值
-        :param num_modes: 模态截断保留的阶数
+        :param distance_threshold: clustering threshold
+        :param num_modes: number of modes retained by modal truncation
         """
         self.distance_threshold = distance_threshold
         self.num_modes = num_modes
@@ -61,7 +61,7 @@ class FastAdaptiveNetworkReducer:
         st_global = time()    
         n = len(m_vector)
         
-        # 1. 识别节点角色
+        # 1. Identify node roles
         ctrl_indices = np.where(node_type == 3)[0]
         normal_indices = np.where(node_type != 3)[0]
         
@@ -72,7 +72,7 @@ class FastAdaptiveNetworkReducer:
             logging.warning("No normal nodes to reduce or system too small.")
             return np.eye(n), None, None, None
 
-        # 2. 构建物理矩阵
+        # 2. Build physical matrices
         M_sp, D_sp, L_sp = build_physical_matrices_sparse(m_vector, 
                                                           m_gs, 
                                                           spring_Y, 
@@ -80,7 +80,7 @@ class FastAdaptiveNetworkReducer:
                                                           d_drag)
 
         # =================================================================
-        # 3. 提取受力节点 (公共逻辑提前)
+        # 3. Extract force-receiving nodes (common logic moved earlier)
         # =================================================================
         u, v = m_gs[0], m_gs[1]
         connected_v = v[np.isin(u, ctrl_indices)]
@@ -92,13 +92,13 @@ class FastAdaptiveNetworkReducer:
         if len(target_nodes) == 0: target_nodes = np.array([0])
 
         # =================================================================
-        # 4. 判断并计算特征嵌入 Z (全空间 Lyapunov vs 降维投影 Lyapunov)
+        # 4. Decide and compute the feature embedding Z (full-space Lyapunov vs. reduced-projection Lyapunov)
         # =================================================================
         if n < 2 * self.num_modes:
-            # --- 不进行模态分解：直接在完整物理空间求解 Lyapunov ---
+            # --- No modal decomposition: solve Lyapunov directly in the full physical space ---
             print(f"Node count ({n}) < 2*num_modes. Skipping eigsh, solving full-space Lyapunov.")
             
-            # 构造未降维的系统矩阵 A_full (2n x 2n)
+            # Construct the un-reduced system matrix A_full (2n x 2n)
             M_d = M_sp.diagonal()
             M_inv = sp.diags(1.0 / M_d, format='csr')
             Minv_L = (M_inv @ L_sp).toarray()
@@ -109,7 +109,7 @@ class FastAdaptiveNetworkReducer:
                 [-Minv_L, -Minv_D]
             ])
             
-            # 构造未降维的输入矩阵 B_full_eff
+            # Construct the un-reduced input matrix B_full_eff
             ones_n = np.ones((n, 1))
             sigma_D = (ones_n.T @ D_sp @ ones_n)[0, 0]
             ones_T_F = np.ones((1, m_inputs))
@@ -123,14 +123,14 @@ class FastAdaptiveNetworkReducer:
                 [F_full]
             ])
             
-            # 求解全维 Lyapunov 方程
+            # Solve the full-dimensional Lyapunov equation
             try:
                 P_tilde = solve_continuous_lyapunov(A_full - 1e-5 * np.eye(2 * n), -B_full_eff @ B_full_eff.T)
             except Exception as e:
                 logging.error(f"Full-space Lyapunov failed: {e}")
                 import pdb; pdb.set_trace()
                 
-            # 全维 Gramian 修正与嵌入空间计算
+            # Full-dimensional Gramian correction and embedding-space computation
             nu_full_T = np.block([[ones_n.T @ D_sp, ones_n.T @ M_sp]])
             beta_a = - (nu_full_T @ P_tilde @ nu_full_T.T)[0, 0] / (sigma_D ** 2)
             Pi_full = np.block([
@@ -143,10 +143,10 @@ class FastAdaptiveNetworkReducer:
             w, v_e = np.linalg.eigh(P11)
             w[w < 0] = 0
             C = v_e @ np.diag(np.sqrt(w))
-            Z = C  # 全空间下等价于 Phi=I_n，所以 Z = I * C = C
+            Z = C  # In the full space this is equivalent to Phi=I_n, so Z = I * C = C
 
         else:
-            # --- 原有逻辑：进行模态分解，在低维空间求解 Lyapunov ---
+            # --- Original logic: perform modal decomposition and solve Lyapunov in the low-dimensional space ---
             k_modes = min(self.num_modes, n - 2) 
             eigenvalues, Phi = eigsh(L_sp, k=k_modes, M=M_sp, sigma=-1e-4, which='LM')
             
@@ -193,7 +193,7 @@ class FastAdaptiveNetworkReducer:
             Z = Phi @ C
 
         # =================================================================
-        # 5. 限制性聚类逻辑：仅聚类 normal_indices
+        # 5. Restricted clustering logic: cluster only normal_indices
         # =================================================================
         Z_normal = Z[normal_indices, :]
         normal_types = node_type[normal_indices]
@@ -215,7 +215,7 @@ class FastAdaptiveNetworkReducer:
         )
 
         # =================================================================
-        # 6. 构建 N x N 投影矩阵 P
+        # 6. Build the N x N projection matrix P
         # =================================================================
         P = np.zeros((n, n))
         unique_labels = np.unique(cluster_labels)
@@ -238,18 +238,18 @@ class FastAdaptiveNetworkReducer:
 
     def _constrained_hierarchical_clustering_vectorized(self, Z_normal, edge_src, edge_dst, n_nodes, node_types=None):
         """
-        执行约束层次聚类：只允许空间相连（有边连接）且 type 相同的节点合并
-        完全使用矩阵运算实现，避免 for 循环
+        Perform constrained hierarchical clustering: only spatially connected (edge-connected) nodes with the same type may merge
+        Implemented entirely with matrix operations to avoid for loops
         
         Args:
-            Z_normal: 普通节点的嵌入坐标 [n_normal, k]
-            edge_src: 边的源节点局部索引 [n_edges]
-            edge_dst: 边的目标节点局部索引 [n_edges]
-            n_nodes: 普通节点数量
-            node_types: 每个普通节点的 type 数组（用于约束只合并 type 相同的节点）
+            Z_normal: embedding coordinates of normal nodes [n_normal, k]
+            edge_src: local indices of the source nodes of edges [n_edges]
+            edge_dst: local indices of the target nodes of edges [n_edges]
+            n_nodes: number of normal nodes
+            node_types: type array for each normal node (constrains merging to nodes of the same type)
         
         Returns:
-            cluster_labels: 每个节点的聚类标签
+            cluster_labels: cluster label for each node
         """
         Z_src = Z_normal[edge_src]
         Z_dst = Z_normal[edge_dst]
@@ -257,20 +257,20 @@ class FastAdaptiveNetworkReducer:
 
         dist_threshold = np.percentile(edge_distances, 10)
 
-        # 3. 构造类型一致性约束 + 物理连接约束
+        # 3. Build type-consistency constraints + physical connectivity constraints
         type_mask = (node_types[edge_src] == node_types[edge_dst])
         valid_u = edge_src[type_mask]
         valid_v = edge_dst[type_mask]
         
-        # 构造连接矩阵（只有相连且同类型的点才能合并）
+        # Build the connectivity matrix (only connected points of the same type can merge)
         connectivity = sp.coo_matrix(
             (np.ones(len(valid_u)), (valid_u, valid_v)),
             shape=(n_nodes, n_nodes)
         )
 
-        # 4. 执行层次聚类
-        # n_clusters=None 必须配合 distance_threshold 使用
-        # linkage='average' (平均距离) 比之前的连通分量法能有效防止“一锅端”
+        # 4. Perform hierarchical clustering
+        # n_clusters=None must be used together with distance_threshold
+        # linkage='average' (average distance) prevents everything from collapsing into one cluster, unlike the previous connected-components method
         model = AgglomerativeClustering(
             n_clusters=None,
             distance_threshold=dist_threshold,
@@ -280,7 +280,7 @@ class FastAdaptiveNetworkReducer:
         
         labels = model.fit_predict(Z_normal)
 
-        # --- 新增：打印普通节点的压缩情况 ---
+        # --- Added: print the compression status of normal nodes ---
         n_clusters = len(np.unique(labels))
         reduction_pct = (1 - n_clusters / n_nodes) * 100
         print(f"\n[Clustering Detail]")
@@ -294,37 +294,37 @@ class FastAdaptiveNetworkReducer:
 class RandomReducer:
     def __init__(self, ratio=0.5, seed=None):
         """
-        随机Reducer，对普通节点进行随机合并
+        Random reducer that randomly merges normal nodes
         
-        :param ratio: 最终保留的普通节点比例，默认0.5
-        :param seed: 随机种子，用于可重复性
+        :param ratio: fraction of normal nodes finally retained, default 0.5
+        :param seed: random seed for reproducibility
         """
         self.ratio = ratio
         self.seed = seed
 
     def reduce(self, m_vector, m_gs, spring_Y, d_dashpot, d_drag, node_type):
         """
-        执行随机降维
+        Perform random dimensionality reduction
         
         Args:
-            m_vector: 节点质量向量 [n]
-            m_gs: 边的连接关系 [2, n_edges]
-            spring_Y: 弹簧刚度系数 [n_edges]
-            d_dashpot: 阻尼系数
-            d_drag: 阻力系数
-            node_type: 节点类型数组 [n]，type==3 为 controller
+            m_vector: node mass vector [n]
+            m_gs: edge connectivity [2, n_edges]
+            spring_Y: spring stiffness coefficients [n_edges]
+            d_dashpot: damping coefficient
+            d_drag: drag coefficient
+            node_type: node type array [n], type==3 means controller
         
         Returns:
-            P: 投影矩阵 [n, n]
-            M_hat: 降维后的质量矩阵 [n, n]
-            D_hat: 降维后的阻尼矩阵 [n, n]
-            L_hat: 降维后的拉普拉斯矩阵 [n, n]
+            P: projection matrix [n, n]
+            M_hat: reduced mass matrix [n, n]
+            D_hat: reduced damping matrix [n, n]
+            L_hat: reduced Laplacian matrix [n, n]
         """
         st_global = time()
         n = len(m_vector)
         
-        # 1. 识别节点角色
-        # node_type == 3 为 controller
+        # 1. Identify node roles
+        # node_type == 3 means controller
         ctrl_indices = np.where(node_type == 3)[0]
         normal_indices = np.where(node_type != 3)[0]
         
@@ -335,50 +335,50 @@ class RandomReducer:
             logging.warning("No normal nodes to reduce or system too small.")
             return np.eye(n), None, None, None
 
-        # 2. 构建物理矩阵（使用提供的 sparse 构建函数）
+        # 2. Build physical matrices (using the provided sparse builder)
         M_sp, D_sp, L_sp = build_physical_matrices_sparse(m_vector, 
                                                           m_gs, 
                                                           spring_Y, 
                                                           d_dashpot, 
                                                           d_drag)
 
-        # 3. 对 normal 节点进行随机合并
-        # 设置随机种子以保证可重复性
+        # 3. Randomly merge normal nodes
+        # Set the random seed to ensure reproducibility
         rng = np.random.RandomState(self.seed)
         
-        # 计算要保留的目标节点数量
+        # Compute the number of target nodes to retain
         target_count = max(1, int(n_normal * self.ratio))
         
-        # 从 normal 节点中随机选择目标节点索引
+        # Randomly select target node indices among normal nodes
         target_indices = rng.choice(n_normal, size=target_count, replace=False)
         target_indices.sort()
         
-        # 创建映射数组：每个 normal 节点映射到一个目标节点
-        # -1 表示该节点是目标节点本身
+        # Create the mapping array: each normal node maps to one target node
+        # -1 means this node is itself a target node
         mapping = np.full(n_normal, -1, dtype=np.int64)
         
-        # 将非目标节点随机分配到目标节点
+        # Randomly assign non-target nodes to target nodes
         non_target_indices = np.setdiff1d(np.arange(n_normal), target_indices)
         if len(non_target_indices) > 0:
-            # 随机分配到各个目标节点
+            # Randomly assign to the various target nodes
             assignments = rng.randint(0, target_count, size=len(non_target_indices))
             for i, nt_idx in enumerate(non_target_indices):
                 mapping[nt_idx] = target_indices[assignments[i]]
         
-        # 4. 构建投影矩阵 P [n x n]
+        # 4. Build the projection matrix P [n x n]
         P = np.eye(n)
         
-        # 设置非目标节点的映射：将这些节点合并到对应的目标节点
+        # Set the mapping for non-target nodes: merge these nodes into their corresponding target nodes
         for i, normal_idx in enumerate(normal_indices):
             if mapping[i] >= 0:
-                # 该节点需要合并到目标节点
+                # This node must be merged into the target node
                 target_normal_idx = normal_indices[mapping[i]]
                 P[normal_idx, target_normal_idx] = 1.0
                 P[normal_idx, normal_idx] = 0.0
 
         # import pdb; pdb.set_trace()
 
-        # # 5. 计算降维后的物理矩阵
+        # # 5. Compute the reduced physical matrices
         # M_hat = P.T @ M_sp @ P
         # D_hat = P.T @ D_sp @ P
         # L_hat = P.T @ L_sp @ P

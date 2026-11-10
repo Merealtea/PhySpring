@@ -13,13 +13,13 @@ import warp as wp
 from matplotlib import cm
 from matplotlib.colors import Normalize
 
-# 从 End2End_Reduction_Dataset 导入相关类
+# Import related classes from End2End_Reduction_Dataset
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from End2End_Reduction_Dataset import End2EndReductionDataset
 from qqtt.utils import cfg
 
-# 初始化 warp
+# Initialize warp
 wp.init()
 wp.set_device("cuda:0")
 
@@ -29,54 +29,54 @@ output_file = "results/node_degree_analysis.csv"
 visualization_output_dir = "./visualization/node_degree/"
 
 # Node type constants
-NODE_TYPE_OBJECT = 0      # 物体点
-NODE_TYPE_SURFACE = 1     # 表面点
-NODE_TYPE_INTERIOR = 2    # 内部点
-NODE_TYPE_CONTROLLER = 3  # 控制点
+NODE_TYPE_OBJECT = 0      # Object points
+NODE_TYPE_SURFACE = 1     # Surface points
+NODE_TYPE_INTERIOR = 2    # Interior points
+NODE_TYPE_CONTROLLER = 3  # Controller points
 
 
 def visualize_prediction_vs_gt(pred_vertices, gt_vertices, edges, output_dir, 
                                 level_idx, node_types=None, num_original_points=None, fps=5):
     """
-    可视化预测结果和真值的对比（只绘制 object point）
+    Visualize the comparison between predictions and ground truth (only object points)
     
     Args:
-        pred_vertices: 预测的顶点轨迹 [T, N, 3]
-        gt_vertices: 真值顶点轨迹 [T, N_gt, 3]
-        edges: 边连接 [2, num_edges]
-        output_dir: 输出目录
-        level_idx: 层级索引
-        node_types: 节点类型 [N]
-        num_original_points: object point 的数量（只绘制这些点）
-        fps: 帧率
+        pred_vertices: Predicted vertex trajectory [T, N, 3]
+        gt_vertices: Ground truth vertex trajectory [T, N_gt, 3]
+        edges: Edge connections [2, num_edges]
+        output_dir: Output directory
+        level_idx: Level index
+        node_types: Node types [N]
+        num_original_points: Number of object points (only these points are drawn)
+        fps: Frame rate
     """
     os.makedirs(output_dir, exist_ok=True)
     
     T = pred_vertices.shape[0]
     
-    # 创建临时目录保存帧
+    # Create a temporary directory to save frames
     temp_dir = os.path.join(output_dir, f'temp_comparison_level_{level_idx}')
     os.makedirs(temp_dir, exist_ok=True)
     
     print(f"Creating comparison video for Level {level_idx} with {T} frames...")
     
-    # 如果没有指定 num_original_points，使用 gt_vertices 的数量
+    # If num_original_points is not specified, use the number of gt_vertices
     if num_original_points is None:
         num_original_points = gt_vertices.shape[1]
     
-    # 只取 object point 部分
+    # Take only the object point portion
     pred_object_points = pred_vertices[:, :num_original_points, :]  # [T, N_obj, 3]
     
-    # 计算误差（只计算 object point）
+    # Compute errors (only over object points)
     errors = np.linalg.norm(pred_object_points - gt_vertices, axis=-1)  # [T, N_obj]
     max_error = np.max(errors)
     
-    # 预先计算统一的坐标轴范围（使用所有帧的所有顶点）
+    # Precompute unified axis limits (using all vertices across all frames)
     all_gt_verts = gt_vertices.reshape(-1, 3)  # [T*N, 3]
     all_pred_verts = pred_object_points.reshape(-1, 3)  # [T*N, 3]
     all_verts_combined = np.concatenate([all_gt_verts, all_pred_verts], axis=0)
     
-    margin = 0.15  # 增加 margin 确保所有点都可见
+    margin = 0.15  # Increase margin to ensure all points are visible
     x_min = all_verts_combined[:, 0].min() - margin
     x_max = all_verts_combined[:, 0].max() + margin
     y_min = all_verts_combined[:, 1].min() - margin
@@ -86,11 +86,11 @@ def visualize_prediction_vs_gt(pred_vertices, gt_vertices, edges, output_dir,
     
     print(f"Unified axis limits: X[{x_min:.3f}, {x_max:.3f}], Y[{y_min:.3f}, {y_max:.3f}], Z[{z_min:.3f}, {z_max:.3f}]")
     
-    # 渲染每一帧
+    # Render each frame
     for frame_idx in tqdm(range(T), desc=f"Rendering Level {level_idx}"):
         fig = plt.figure(figsize=(16, 6))
         
-        # GT 子图
+        # GT subplot
         ax1 = fig.add_subplot(121, projection='3d')
         gt_verts = gt_vertices[frame_idx]
         ax1.scatter(gt_verts[:, 0], gt_verts[:, 1], gt_verts[:, 2], c='green', s=30, alpha=0.8, label='GT')
@@ -100,11 +100,11 @@ def visualize_prediction_vs_gt(pred_vertices, gt_vertices, edges, output_dir,
         ax1.set_ylabel('Y')
         ax1.set_zlabel('Z')
         
-        # Prediction 子图
+        # Prediction subplot
         ax2 = fig.add_subplot(122, projection='3d')
         pred_verts = pred_object_points[frame_idx]
         
-        # 根据误差着色预测点
+        # Color predicted points by error
         frame_errors = errors[frame_idx]
         norm = Normalize(vmin=0, vmax=max_error)
         colors = cm.RdYlGn_r(norm(frame_errors))
@@ -116,7 +116,7 @@ def visualize_prediction_vs_gt(pred_vertices, gt_vertices, edges, output_dir,
         ax2.set_ylabel('Y')
         ax2.set_zlabel('Z')
         
-        # 使用统一的坐标轴范围
+        # Use unified axis limits
         ax1.set_xlim(x_min, x_max)
         ax2.set_xlim(x_min, x_max)
         ax1.set_ylim(y_min, y_max)
@@ -124,12 +124,12 @@ def visualize_prediction_vs_gt(pred_vertices, gt_vertices, edges, output_dir,
         ax1.set_zlim(z_min, z_max)
         ax2.set_zlim(z_min, z_max)
         
-        # 保存帧
+        # Save frame
         frame_path = os.path.join(temp_dir, f'frame_{frame_idx:05d}.png')
         plt.savefig(frame_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
     
-    # 将图像转换为视频
+    # Convert images to video
     video_path = os.path.join(output_dir, f'level_{level_idx}_comparison.mp4')
     
     first_frame_path = os.path.join(temp_dir, 'frame_00000.png')
@@ -150,7 +150,7 @@ def visualize_prediction_vs_gt(pred_vertices, gt_vertices, edges, output_dir,
         writer.release()
         print(f"Comparison video saved: {video_path}")
         
-        # 清理临时文件
+        # Clean up temporary files
         import shutil
         shutil.rmtree(temp_dir)
     
@@ -160,15 +160,15 @@ def visualize_prediction_vs_gt(pred_vertices, gt_vertices, edges, output_dir,
 def visualize_trajectory_overlay(pred_vertices, gt_vertices, output_dir, level_idx, 
                                   frame_indices=None, save_individual_frames=True):
     """
-    可视化预测和真值的叠加对比（在同一 3D 空间中）
+    Visualize an overlay comparison of predictions and ground truth (in the same 3D space)
     
     Args:
-        pred_vertices: 预测的顶点轨迹 [T, N, 3]
-        gt_vertices: 真值顶点轨迹 [T, N_gt, 3]
-        output_dir: 输出目录
-        level_idx: 层级索引
-        frame_indices: 要可视化的帧索引列表（可选）
-        save_individual_frames: 是否保存单个帧图像
+        pred_vertices: Predicted vertex trajectory [T, N, 3]
+        gt_vertices: Ground truth vertex trajectory [T, N_gt, 3]
+        output_dir: Output directory
+        level_idx: Level index
+        frame_indices: List of frame indices to visualize (optional)
+        save_individual_frames: Whether to save individual frame images
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -186,15 +186,15 @@ def visualize_trajectory_overlay(pred_vertices, gt_vertices, output_dir, level_i
         gt_verts = gt_vertices[frame_idx]
         pred_verts = pred_vertices[frame_idx]
         
-        # 绘制真值点（绿色）
+        # Plot ground truth points (green)
         ax.scatter(gt_verts[:, 0], gt_verts[:, 1], gt_verts[:, 2], 
                   c='green', s=30, alpha=0.6, label='Ground Truth')
         
-        # 绘制预测点（蓝色）
+        # Plot predicted points (blue)
         ax.scatter(pred_verts[:, 0], pred_verts[:, 1], pred_verts[:, 2], 
                   c='blue', s=30, alpha=0.6, label='Prediction')
         
-        # 设置坐标轴范围
+        # Set axis limits
         all_verts = np.concatenate([gt_verts, pred_verts], axis=0)
         margin = 0.1
         x_min, x_max = all_verts[:, 0].min() - margin, all_verts[:, 0].max() + margin
@@ -221,34 +221,34 @@ def visualize_trajectory_overlay(pred_vertices, gt_vertices, output_dir, level_i
 
 def compute_trajectory_errors(pred_vertices, gt_vertices):
     """
-    计算轨迹误差统计
+    Compute trajectory error statistics
     
     Args:
-        pred_vertices: 预测的顶点轨迹 [T, N, 3]
-        gt_vertices: 真值顶点轨迹 [T, N, 3]
+        pred_vertices: Predicted vertex trajectory [T, N, 3]
+        gt_vertices: Ground truth vertex trajectory [T, N, 3]
     
     Returns:
-        error_stats: 误差统计字典
+        error_stats: Dictionary of error statistics
     """
     if pred_vertices.shape != gt_vertices.shape:
         print(f"Warning: Shape mismatch. Pred: {pred_vertices.shape}, GT: {gt_vertices.shape}")
-        # 尝试只比较共同的部分
+        # Try to compare only the overlapping portion
         min_T = min(pred_vertices.shape[0], gt_vertices.shape[0])
         min_N = min(pred_vertices.shape[1], gt_vertices.shape[1])
         pred_vertices = pred_vertices[:min_T, :min_N]
         gt_vertices = gt_vertices[:min_T, :min_N]
     
-    # 计算每帧每点的误差
+    # Compute per-frame per-point errors
     errors = np.linalg.norm(pred_vertices - gt_vertices, axis=-1)  # [T, N]
     
-    # 计算统计
+    # Compute statistics
     error_stats = {
         'mean_error': np.mean(errors),
         'std_error': np.std(errors),
         'min_error': np.min(errors),
         'max_error': np.max(errors),
-        'per_frame_mean': np.mean(errors, axis=1),  # 每帧的平均误差
-        'per_point_mean': np.mean(errors, axis=0),  # 每点的平均误差
+        'per_frame_mean': np.mean(errors, axis=1),  # Mean error per frame
+        'per_point_mean': np.mean(errors, axis=0),  # Mean error per point
     }
     
     return error_stats
@@ -256,14 +256,14 @@ def compute_trajectory_errors(pred_vertices, gt_vertices):
 
 def run_analysis_with_warp_simulator(node_info_path, mech_info_path, output_dir, device="cuda:0"):
     """
-    使用 warp simulator 运行分析并可视化
+    Run analysis and visualization using the warp simulator
     
     Args:
-        data_dir: 数据目录
-        object_case: 对象案例名称
-        mech_info_path: 力学参数路径
-        output_dir: 输出目录
-        device: 设备
+        data_dir: Data directory
+        object_case: Object case name
+        mech_info_path: Path to mechanical parameters
+        output_dir: Output directory
+        device: Device
     """
     print(f"{'='*60}")
     print(f"Running analysis with Warp Simulator")
@@ -271,13 +271,13 @@ def run_analysis_with_warp_simulator(node_info_path, mech_info_path, output_dir,
     print(f"Mech info path: {mech_info_path}")
     print(f"{'='*60}\n")
     
-    # 创建 simulator runner
+    # Create simulator runner
     runner = WarpSimulatorRunner(node_info_path, mech_info_path, device)
 
-    # 运行仿真
+    # Run simulation
     pred_vertices = runner.run_simulation()
     
-    # 获取真值
+    # Get ground truth
     gt_vertices = runner.get_gt_vertices()
     
    
@@ -286,18 +286,18 @@ def run_analysis_with_warp_simulator(node_info_path, mech_info_path, output_dir,
 
 class WarpSimulatorRunner:
     """
-    用于加载训练好的 warp 模型参数并运行 simulator 的类
-    使用 End2EndReductionDataset 进行数据加载和 simulator 创建
+    Class for loading trained warp model parameters and running the simulator
+    Uses End2EndReductionDataset for data loading and simulator creation
     """
     def __init__(self, node_file_path=None, mech_info_path=None, device="cuda:0"):
         """
-        初始化 simulator runner
+        Initialize simulator runner
         
         Args:
-            data_dir: 数据目录路径
-            object_case: 对象案例名称
-            mech_info_path: 力学参数路径（可选，如果不提供则使用默认参数）
-            device: 设备
+            data_dir: Data directory path
+            object_case: Object case name
+            mech_info_path: Path to mechanical parameters (optional; default parameters are used if not provided)
+            device: Device
         """
         self.node_file_path = node_file_path
         self.mech_info_path = mech_info_path
@@ -310,23 +310,23 @@ class WarpSimulatorRunner:
         self._create_simulator()
     
     def _load_mech_info(self):
-        """加载力学参数"""
-        self.mech_info = None  # 初始化 mech_info
-        self.mech_info_list = None  # 多层级 mech_info 列表
+        """Load mechanical parameters"""
+        self.mech_info = None  # Initialize mech_info
+        self.mech_info_list = None  # List of multi-level mech_info
         
         if self.mech_info_path is not None and os.path.exists(self.mech_info_path):
             print(f"Loading mechanical parameters from: {self.mech_info_path}")
             loaded_data = torch.load(self.mech_info_path, map_location=self.device)
             
-            # 处理保存的数据格式：{'mech': [...]} 或直接是 mech_info 字典
+            # Handle the saved data format: {'mech': [...]} or a direct mech_info dict
             if isinstance(loaded_data, dict) and 'mech' in loaded_data:
-                # 新格式：包含完整 stage 信息的列表
+                # New format: a list containing complete stage information
                 self.mech_info_list = loaded_data['mech']
                 print(f"Loaded {len(self.mech_info_list)} levels of mechanical info")
-                # 使用第 0 层（最上层）的数据进行仿真
+                # Use level 0 (topmost level) data for simulation
                 self.mech_info = self.mech_info_list[0] if len(self.mech_info_list) > 0 else None
             else:
-                # 直接是 mech_info 字典
+                # Directly a mech_info dict
                 self.mech_info = loaded_data
                 self.mech_info_list = [loaded_data]
                 print(f"Loaded mechanical info (direct format)")
@@ -334,11 +334,11 @@ class WarpSimulatorRunner:
             print(f"Warning: mech_info_path is None or file does not exist: {self.mech_info_path}")
 
     def _create_dataset(self):
-        """创建 End2EndReductionDataset 实例"""
+        """Create an End2EndReductionDataset instance"""
         print("Creating End2EndReductionDataset...")
         
-        # 从 mech_info 中提取 object_case
-        # 假设 mech_info_path 类似于 "./res/End2End_Reduction/double_lift_zebra/..."
+        # Extract object_case from mech_info
+        # Assume mech_info_path looks like "./res/End2End_Reduction/double_lift_zebra/..."
         if self.mech_info_path is not None:
             parts = self.mech_info_path.split('/')
             for i, part in enumerate(parts):
@@ -346,11 +346,11 @@ class WarpSimulatorRunner:
                     object_case = parts[i + 1]
                     break
             else:
-                object_case = "double_lift_zebra"  # 默认值
+                object_case = "double_lift_zebra"  # Default value
         else:
             object_case = "double_lift_zebra"
         
-        # 创建 args 对象（模拟 argparse.Namespace）
+        # Create args object (mimicking argparse.Namespace)
         class Args:
             def __init__(self):
                 self.object_case = object_case
@@ -360,7 +360,7 @@ class WarpSimulatorRunner:
         
         args = Args()
         
-        # 创建 dataset
+        # Create dataset
         self.dataset = End2EndReductionDataset(
             root="./data/different_types/",
             layer_num=args.multi_mesh_layer,
@@ -375,25 +375,25 @@ class WarpSimulatorRunner:
         print(f"Dataset created for {object_case}")
     
     def _create_simulator(self):
-        """使用 End2EndReductionDataset.create_spring_mass_sim 创建 simulator"""
+        """Create the simulator using End2EndReductionDataset.create_spring_mass_sim"""
         print("Creating SpringMassSystemWarp simulator using dataset.create_spring_mass_sim...")
     
-        # 检查 mech_info 是否加载成功
+        # Check whether mech_info was loaded successfully
         if self.mech_info is None:
             print("Error: mech_info not loaded, cannot create simulator")
             return
         
-        # 从 mech_info 中提取 simulator 所需的参数
-        self.vertices = self.mech_info['vertices']  # 下采样后的节点位置
-        self.edges = self.mech_info['edges']  # 下采样后的连接关系
-        self.node_type = self.mech_info['node_type']  # 下采样后的节点类型
-        self.masses = self.mech_info['masses']  # 下采样后的节点质量
-        self.gt_vertices = self.mech_info['gt_vertices']  # 下采样后的 GT vertices
-        self.gt_visibility = self.mech_info['gt_visibility']  # 下采样后的 GT visibility
-        self.gt_motions_valid = self.mech_info.get('gt_motions_valid', None)  # 下采样后的 GT motions valid
-        self.node_ids = self.mech_info.get('node_ids', None)  # 节点 ID 映射
+        # Extract the parameters required by the simulator from mech_info
+        self.vertices = self.mech_info['vertices']  # Downsampled node positions
+        self.edges = self.mech_info['edges']  # Downsampled connectivity
+        self.node_type = self.mech_info['node_type']  # Downsampled node types
+        self.masses = self.mech_info['masses']  # Downsampled node masses
+        self.gt_vertices = self.mech_info['gt_vertices']  # Downsampled GT vertices
+        self.gt_visibility = self.mech_info['gt_visibility']  # Downsampled GT visibility
+        self.gt_motions_valid = self.mech_info.get('gt_motions_valid', None)  # Downsampled GT motions valid
+        self.node_ids = self.mech_info.get('node_ids', None)  # Node ID mapping
         
-        # 计算 rest_lengths
+        # Compute rest_lengths
         if isinstance(self.edges, torch.Tensor):
             spring_graph = self.edges.int().T.contiguous()
         else:
@@ -404,7 +404,7 @@ class WarpSimulatorRunner:
             dim=1
         )
         
-        # 使用 dataset.create_spring_mass_sim 创建 simulator
+        # Create the simulator using dataset.create_spring_mass_sim
         self.simulator = self.dataset.create_spring_mass_sim(
             init_vertices=self.vertices,
             init_springs=spring_graph,
@@ -416,12 +416,12 @@ class WarpSimulatorRunner:
             gt_object_motions_valid=self.gt_motions_valid,
         )
         
-        # 如果加载了力学参数，设置到 simulator 中
+        # If mechanical parameters were loaded, set them on the simulator
         if self.mech_info is not None:
             self._set_mech_info_to_simulator()
     
     def _set_mech_info_to_simulator(self):
-        """将力学参数设置到 simulator 中"""
+        """Set mechanical parameters on the simulator"""
         if 'log_spring_Y' in self.mech_info:
             wp_spring_Y = wp.from_torch(self.mech_info['log_spring_Y'].contiguous(), dtype=wp.float32, requires_grad=False)
             self.simulator.set_spring_Y(wp_spring_Y)
@@ -455,17 +455,17 @@ class WarpSimulatorRunner:
     
     def run_simulation(self, num_frames=None):
         """
-        运行 simulator 进行前向传播
+        Run the simulator for forward propagation
         
         Returns:
-            pred_vertices: 预测的顶点轨迹 [T, N, 3]
+            pred_vertices: Predicted vertex trajectory [T, N, 3]
         """
         if num_frames is None:
             num_frames = cfg.train_frame + cfg.test_frame
         
         print(f"Running simulation for {num_frames} frames...")
         
-        # 初始化状态
+        # Initialize state
         self.simulator.set_init_state(
             self.simulator.wp_init_vertices,
             self.simulator.wp_init_velocities
@@ -474,25 +474,25 @@ class WarpSimulatorRunner:
         pred_vertices = []
         
         for frame_idx in tqdm(range(num_frames), desc="Running simulation"):
-            # 获取当前帧的预测结果
+            # Get the prediction for the current frame
             x = wp.to_torch(self.simulator.wp_states[0].wp_x, requires_grad=False).cpu().numpy()
             pred_vertices.append(x.copy())
             
-            # 设置控制器目标（如果是 real 数据）
+            # Set controller target (for real data)
             if cfg.data_type == "real":
                 self.simulator.set_controller_target(frame_idx, pure_inference=False)
             
-            # 更新碰撞图
+            # Update collision graph
             if self.simulator.object_collision_flag:
                 self.simulator.update_collision_graph()
             
-            # 运行一步仿真
+            # Run one simulation step
             if cfg.use_graph:
                 wp.capture_launch(self.simulator.forward_graph)
             else:
                 self.simulator.step()
             
-            # 更新状态
+            # Update state
             self.simulator.set_init_state(
                 self.simulator.wp_states[-1].wp_x,
                 self.simulator.wp_states[-1].wp_v
@@ -505,15 +505,15 @@ class WarpSimulatorRunner:
     
     def get_gt_vertices(self, num_frames=None):
         """
-        获取真值顶点
-        直接从加载的 mech_info 中获取已下采样的 GT 数据
+        Get ground truth vertices
+        Directly obtain the downsampled GT data from the loaded mech_info
         
-        注意：mech_info 中的 gt_vertices 可能帧数不足，需要重复最后一帧
+        Note: gt_vertices in mech_info may have too few frames, so the last frame needs to be repeated
         """
         if num_frames is None:
             num_frames = cfg.train_frame + cfg.test_frame
         
-        # 从加载的 mech_info 中获取 GT 数据（已经是下采样后的）
+        # Get GT data from the loaded mech_info (already downsampled)
         if hasattr(self, 'gt_vertices') and self.gt_vertices is not None:
             # gt_vertices shape: [T, N, 3]
             if isinstance(self.gt_vertices, torch.Tensor):
@@ -521,7 +521,7 @@ class WarpSimulatorRunner:
             else:
                 gt_vertices = self.gt_vertices
             
-            # 如果 GT 数据帧数不足，重复最后一帧
+            # If the GT data has too few frames, repeat the last frame
             if gt_vertices.shape[0] < num_frames:
                 last_frame = gt_vertices[-1:]
                 num_repeat = num_frames - gt_vertices.shape[0]
@@ -529,20 +529,20 @@ class WarpSimulatorRunner:
             
             return gt_vertices[:num_frames]
         else:
-            # 如果没有加载的 GT 数据，返回 None
+            # If no GT data was loaded, return None
             print("Warning: No GT vertices available in mech_info")
             return None
     
     def get_edges(self):
-        """获取边连接"""
-        # 从加载的 mech_info 中获取边
+        """Get edge connections"""
+        # Get edges from the loaded mech_info
         if hasattr(self, 'edges') and self.edges is not None:
             return self.edges
         return None
     
     def get_node_types(self):
-        """获取节点类型"""
-        # 从加载的 mech_info 中获取节点类型
+        """Get node types"""
+        # Get node types from the loaded mech_info
         if hasattr(self, 'node_type') and self.node_type is not None:
             if isinstance(self.node_type, torch.Tensor):
                 return self.node_type
@@ -553,30 +553,30 @@ class WarpSimulatorRunner:
 
 def load_all_data_from_mech_info(dir_name):
     """
-    完全从 mech_info 文件中加载所有可视化所需的数据
-    不再依赖 global_best_trajectory.pkl
+    Load all data needed for visualization entirely from the mech_info file
+    No longer depends on global_best_trajectory.pkl
     
-    mech_info 文件格式：
-    - 直接是一个 dict，包含：
-      - vertices: 节点位置 [N, 3]
-      - edges: 边连接 [2, num_edges]
-      - node_type: 节点类型 [N]
-      - masses: 节点质量 [N]
-      - gt_vertices: GT 顶点轨迹 [T, N, 3]
-      - gt_visibility: GT 可见性 [T, N]
-      - gt_motions_valid: GT 运动有效性 [T]
-      - log_spring_Y: 弹簧杨氏模量（log）[num_edges//2]
-      - drag_damping, dashpot_damping: 阻尼参数
-      - collision_elas, collision_fric, collision_object_elas, collision_object_fric: 碰撞参数
+    mech_info file format:
+    - A single dict containing:
+      - vertices: Node positions [N, 3]
+      - edges: Edge connections [2, num_edges]
+      - node_type: Node types [N]
+      - masses: Node masses [N]
+      - gt_vertices: GT vertex trajectory [T, N, 3]
+      - gt_visibility: GT visibility [T, N]
+      - gt_motions_valid: GT motion validity [T]
+      - log_spring_Y: Spring Young's modulus (log) [num_edges//2]
+      - drag_damping, dashpot_damping: Damping parameters
+      - collision_elas, collision_fric, collision_object_elas, collision_object_fric: Collision parameters
     
-    返回：dict 包含所有数据（单个 level，不是 list）
+    Returns: dict containing all data (single level, not a list)
     """
-    # 使用 stage1_epoch0_iter0_best_mech_info.pth
+    # Use stage1_epoch0_iter0_best_mech_info.pth
     mech_info_path = os.path.join(dir_name, 'spring_mech_info', 'global_best_mech_info.pth')
     
     if not os.path.exists(mech_info_path):
         print(f"Warning: mech_info file not found: {mech_info_path}")
-        # 尝试备选路径
+        # Try an alternative path
         alt_mech_info_path = os.path.join(dir_name,'spring_mech_info', 'global_best_mech_info.pth')
         if os.path.exists(alt_mech_info_path):
             mech_info_path = alt_mech_info_path
@@ -587,12 +587,12 @@ def load_all_data_from_mech_info(dir_name):
     print(f"Loading all data from mech_info: {mech_info_path}")
     mech_data = torch.load(mech_info_path, map_location='cpu')['mech'][0]
     import pdb; pdb.set_trace()
-    # mech_data 直接就是 dict，不需要处理 'mech' 键
+    # mech_data is directly a dict, no need to handle the 'mech' key
     if not isinstance(mech_data, dict):
         print(f"Error: Unexpected mech_data format: {type(mech_data)}, expected dict")
         return None
     
-    # 提取所有数据（单个 level）
+    # Extract all data (single level)
     all_data = {
         'vertices': None,      # [N, 3]
         'edges': None,         # [2, num_edges]
@@ -604,7 +604,7 @@ def load_all_data_from_mech_info(dir_name):
         'spring_Y': None,      # spring Y
     }
     
-    # 提取顶点
+    # Extract vertices
     if 'vertices' in mech_data:
         verts = mech_data['vertices']
         if isinstance(verts, torch.Tensor):
@@ -613,7 +613,7 @@ def load_all_data_from_mech_info(dir_name):
             all_data['vertices'] = verts
         print(f"  Loaded vertices: {all_data['vertices'].shape}")
 
-    # 提取边
+    # Extract edges
     if 'edges' in mech_data:
         edges = mech_data['edges']
         if isinstance(edges, torch.Tensor):
@@ -622,7 +622,7 @@ def load_all_data_from_mech_info(dir_name):
             all_data['edges'] = edges
         print(f"  Loaded edges: {all_data['edges'].shape if hasattr(all_data['edges'], 'shape') else len(all_data['edges'])}")
     
-    # 提取节点类型
+    # Extract node types
     if 'node_type' in mech_data:
         nt = mech_data['node_type']
         if isinstance(nt, torch.Tensor):
@@ -631,7 +631,7 @@ def load_all_data_from_mech_info(dir_name):
             all_data['node_types'] = nt
         print(f"  Loaded node_types: {all_data['node_types'].shape}")
     
-    # 提取质量
+    # Extract masses
     if 'masses' in mech_data:
         m = mech_data['masses']
         if isinstance(m, torch.Tensor):
@@ -640,7 +640,7 @@ def load_all_data_from_mech_info(dir_name):
             all_data['masses'] = m
         print(f"  Loaded masses: {all_data['masses'].shape}")
     
-    # 提取 GT 顶点轨迹
+    # Extract GT vertex trajectory
     if 'gt_vertices' in mech_data:
         gt_verts = mech_data['gt_vertices']
         if isinstance(gt_verts, torch.Tensor):
@@ -649,7 +649,7 @@ def load_all_data_from_mech_info(dir_name):
             all_data['gt_vertices'] = gt_verts
         print(f"  Loaded gt_vertices: {all_data['gt_vertices'].shape if hasattr(all_data['gt_vertices'], 'shape') else 'N/A'}")
     
-    # 提取 GT 可见性
+    # Extract GT visibility
     if 'gt_visibility' in mech_data:
         gt_vis = mech_data['gt_visibility']
         if isinstance(gt_vis, torch.Tensor):
@@ -658,7 +658,7 @@ def load_all_data_from_mech_info(dir_name):
             all_data['gt_visibility'] = gt_vis
         print(f"  Loaded gt_visibility: {all_data['gt_visibility'].shape if hasattr(all_data['gt_visibility'], 'shape') else 'N/A'}")
     
-    # 提取 GT 运动有效性
+    # Extract GT motion validity
     if 'gt_motions_valid' in mech_data:
         gt_valid = mech_data['gt_motions_valid']
         if isinstance(gt_valid, torch.Tensor):
@@ -667,7 +667,7 @@ def load_all_data_from_mech_info(dir_name):
             all_data['gt_motions_valid'] = gt_valid
         print(f"  Loaded gt_motions_valid: {all_data['gt_motions_valid'].shape if hasattr(all_data['gt_motions_valid'], 'shape') else 'N/A'}")
     
-    # 提取弹簧杨氏模量
+    # Extract spring Young's modulus
     if 'log_spring_Y' in mech_data:
         sy = mech_data['log_spring_Y']
         if isinstance(sy, torch.Tensor):
@@ -682,33 +682,33 @@ def load_all_data_from_mech_info(dir_name):
 
 def visualize_node_connections(vertices, edges, node_types, output_dir, level_idx, frame_idx=0, spring_Y=None, view_angle='front'):
     """
-    可视化节点连接关系（边），根据弹簧杨氏模量大小着色
+    Visualize node connections (edges), colored by spring Young's modulus magnitude
     
     Args:
-        vertices: 顶点位置 [N, 3]
-        edges: 边连接 [2, num_edges] 或 [num_edges, 2]
-        node_types: 节点类型 [N]
-        output_dir: 输出目录
-        level_idx: 层级索引
-        frame_idx: 帧索引
-        spring_Y: 弹簧杨氏模量 [num_edges] 或 [num_edges//2]，用于着色边
-        view_angle: 视角角度，可选 'front', 'side', 'top', 'iso'
+        vertices: Vertex positions [N, 3]
+        edges: Edge connections [2, num_edges] or [num_edges, 2]
+        node_types: Node types [N]
+        output_dir: Output directory
+        level_idx: Level index
+        frame_idx: Frame index
+        spring_Y: Spring Young's modulus [num_edges] or [num_edges//2], used to color edges
+        view_angle: View angle, one of 'front', 'side', 'top', 'iso'
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # 处理顶点数据
+    # Process vertex data
     if isinstance(vertices, np.ndarray):
         verts = vertices
     else:
         verts = vertices.cpu().numpy() if hasattr(vertices, 'cpu') else np.array(vertices)
     
-    # 处理边数据
+    # Process edge data
     edge_array = edges.T 
     
-    # edge_array 形状可能是 [2, num_edges] 或 [num_edges, 2]
-    # 由于是有向图构建的边（每条边存储了正向和反向），无向图需要除以 2
+    # edge_array shape may be [2, num_edges] or [num_edges, 2]
+    # Since edges are built as a directed graph (each edge stores both forward and reverse), divide by 2 for the undirected graph
 
-    # 处理节点类型
+    # Process node types
     if node_types is not None:
         if isinstance(node_types, np.ndarray):
             types = node_types.flatten()
@@ -717,41 +717,41 @@ def visualize_node_connections(vertices, edges, node_types, output_dir, level_id
     else:
         types = None
     
-    # 处理弹簧杨氏模量
+    # Process spring Young's modulus
     original_spring_Y = None
     if spring_Y is not None:
         if isinstance(spring_Y, torch.Tensor):
             spring_Y = spring_Y.cpu().numpy()
-        # spring_Y 可能是 log_spring_Y，需要取 exp
-        if spring_Y.max() < 10:  # 可能是 log 值
-            original_spring_Y = spring_Y.copy()  # 保存原始 log 值用于统计
+        # spring_Y may be log_spring_Y, which needs exp
+        if spring_Y.max() < 10:  # May be a log value
+            original_spring_Y = spring_Y.copy()  # Save original log values for statistics
             spring_Y = np.exp(spring_Y)
         
 
-    # 定义视角 (elev, azim)
+    # Define view angles (elev, azim)
     view_angles = {
-        'front': (0, 0),      # 前视图
-        'side': (0, 90),      # 侧视图
-        'top': (90, 0),       # 俯视图
-        'iso': (20, 45),      # 等轴测视图
+        'front': (0, 0),      # Front view
+        'side': (0, 90),      # Side view
+        'top': (90, 0),       # Top view
+        'iso': (20, 45),      # Isometric view
     }
     elev, azim = view_angles.get(view_angle, (20, 45))
     
-    # 创建 3D 图形
+    # Create 3D figure
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=elev, azim=azim)
     
-    # 定义节点类型颜色
+    # Define node type colors
     color_map = {
-        NODE_TYPE_OBJECT: 'green',      # 物体点 - 绿色
-        NODE_TYPE_SURFACE: 'blue',      # 表面点 - 蓝色
-        NODE_TYPE_INTERIOR: 'orange',   # 内部点 - 橙色
-        NODE_TYPE_CONTROLLER: 'red',    # 控制点 - 红色
+        NODE_TYPE_OBJECT: 'green',      # Object points - green
+        NODE_TYPE_SURFACE: 'blue',      # Surface points - blue
+        NODE_TYPE_INTERIOR: 'orange',   # Interior points - orange
+        NODE_TYPE_CONTROLLER: 'red',    # Controller points - red
     }
 
   
-    # 绘制节点（缩小点的大小）
+    # Plot nodes (with smaller point size)
     if types is not None:
         for node_type, color in color_map.items():
             mask = (types == node_type)
@@ -761,9 +761,9 @@ def visualize_node_connections(vertices, edges, node_types, output_dir, level_id
     else:
         ax.scatter(verts[:, 0], verts[:, 1], verts[:, 2], c='green', s=5, alpha=0.8)
     
-    # 绘制边（连接线），根据弹簧杨氏模量着色
+    # Plot edges (connecting lines), colored by spring Young's modulus
     if spring_Y is not None and len(spring_Y) > 0:
-        # 使用 colormap 来着色边
+        # Use a colormap to color the edges
         from matplotlib.colors import Normalize
         from matplotlib.cm import ScalarMappable
        
@@ -782,13 +782,13 @@ def visualize_node_connections(vertices, edges, node_types, output_dir, level_id
                         c=color, alpha=0.9, linewidth=3
                     )
         
-        # 添加 colorbar
+        # Add colorbar
         sm = ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, pad=0.1, shrink=0.5)
         cbar.set_label('Spring Young\'s Modulus (Y)', fontsize=12)
     else:
-        # 没有 spring_Y 时使用默认灰色
+        # Use default gray when spring_Y is unavailable
         for edge in edge_array:
             if len(edge) >= 2:
                 i, j = int(edge[0]), int(edge[1])
@@ -800,7 +800,7 @@ def visualize_node_connections(vertices, edges, node_types, output_dir, level_id
                         c='gray', alpha=0.7, linewidth=2.5
                     )
     
-    # 设置标题和标签
+    # Set title and labels
     view_title = {'front': 'Front', 'side': 'Side', 'top': 'Top', 'iso': 'Isometric'}
     view_name = view_title.get(view_angle, view_angle.capitalize())
     ax.set_title(f'Level {level_idx} - Node Connections (Frame {frame_idx}, {view_name} View)', fontsize=14)
@@ -811,7 +811,7 @@ def visualize_node_connections(vertices, edges, node_types, output_dir, level_id
     if types is not None:
         ax.legend(loc='best')
     
-    # 保存图像
+    # Save image
     output_path = os.path.join(output_dir, f'level_{level_idx}_frame_{frame_idx:03d}_connections_{view_angle}.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -821,35 +821,35 @@ def visualize_node_connections(vertices, edges, node_types, output_dir, level_id
 
 def visualize_node_masses(vertices, masses, node_types, output_dir, level_idx, frame_idx=0):
     """
-    可视化节点质量分布（静态图）
-    根据质量大小对节点进行着色
+    Visualize node mass distribution (static image)
+    Color nodes by mass magnitude
     
     Args:
-        vertices: 顶点位置 [N, 3]
-        masses: 节点质量 [N] 或标量
-        node_types: 节点类型 [N]
-        output_dir: 输出目录
-        level_idx: 层级索引
-        frame_idx: 帧索引
+        vertices: Vertex positions [N, 3]
+        masses: Node masses [N] or a scalar
+        node_types: Node types [N]
+        output_dir: Output directory
+        level_idx: Level index
+        frame_idx: Frame index
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # 处理顶点数据
+    # Process vertex data
     if isinstance(vertices, np.ndarray):
         verts = vertices
     else:
         verts = vertices.cpu().numpy() if hasattr(vertices, 'cpu') else np.array(vertices)
     
-    # 处理质量数据
+    # Process mass data
     if isinstance(masses, np.ndarray):
         mass_array = masses.flatten()
     elif hasattr(masses, 'cpu'):
         mass_array = masses.cpu().numpy().flatten()
     else:
-        # 如果 masses 是标量或列表
+        # If masses is a scalar or list
         mass_array = np.array(masses).flatten() if not np.isscalar(masses) else np.array([masses] * len(verts))
     
-    # 处理节点类型
+    # Process node types
     if node_types is not None:
         if isinstance(node_types, np.ndarray):
             types = node_types.flatten()
@@ -858,34 +858,34 @@ def visualize_node_masses(vertices, masses, node_types, output_dir, level_idx, f
     else:
         types = None
     
-    # 创建 3D 图形
+    # Create 3D figure
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_subplot(111, projection='3d')
     
-    # 根据质量着色节点
+    # Color nodes by mass
     norm = Normalize(vmin=np.min(mass_array), vmax=np.max(mass_array))
     cmap = cm.viridis
     
-    # 绘制节点，根据质量着色
+    # Plot nodes colored by mass
     colors = cmap(norm(mass_array))
 
     ax.scatter(verts[:, 0], verts[:, 1], verts[:, 2], 
                c=colors, s=50, alpha=0.8, edgecolors='black', linewidth=0.5)
     
-    # 添加 colorbar
+    # Add colorbar
     from matplotlib.cm import ScalarMappable
     sm = ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = plt.colorbar(sm, ax=ax, pad=0.1, shrink=0.5)
     cbar.set_label('Node Mass', fontsize=12)
     
-    # 设置标题和标签
+    # Set title and labels
     ax.set_title(f'Level {level_idx} - Node Mass Distribution (Frame {frame_idx})', fontsize=14)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
     
-    # 设置坐标轴范围
+    # Set axis limits
     margin = 0.1
     x_min, x_max = verts[:, 0].min() - margin, verts[:, 0].max() + margin
     y_min, y_max = verts[:, 1].min() - margin, verts[:, 1].max() + margin
@@ -895,12 +895,12 @@ def visualize_node_masses(vertices, masses, node_types, output_dir, level_idx, f
     ax.set_ylim(y_min, y_max)
     ax.set_zlim(z_min, z_max)
     
-    # 保存图像
+    # Save image
     output_path = os.path.join(output_dir, f'level_{level_idx}_frame_{frame_idx:03d}_mass.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     
-    # 打印质量统计信息
+    # Print mass statistics
     print(f"  Level {level_idx} Mass Statistics:")
     print(f"    Min: {np.min(mass_array):.6f}")
     print(f"    Max: {np.max(mass_array):.6f}")
@@ -912,15 +912,15 @@ def visualize_node_masses(vertices, masses, node_types, output_dir, level_idx, f
 
 def visualize_node_connections_video(vertices_seq, edges, node_types, output_dir, level_idx, fps=5):
     """
-    创建节点连接动画视频
+    Create a node connection animation video
     
     Args:
-        vertices_seq: 顶点序列 [T, N, 3]
-        edges: 边连接 [2, num_edges] 或 [num_edges, 2]
-        node_types: 节点类型 [N]
-        output_dir: 输出目录
-        level_idx: 层级索引
-        fps: 帧率
+        vertices_seq: Vertex sequence [T, N, 3]
+        edges: Edge connections [2, num_edges] or [num_edges, 2]
+        node_types: Node types [N]
+        output_dir: Output directory
+        level_idx: Level index
+        fps: Frame rate
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -941,10 +941,10 @@ def visualize_node_connections_video(vertices_seq, edges, node_types, output_dir
         frame_idx=frame_idx
     )
     
-    # 将图像转换为视频
+    # Convert images to video
     video_path = os.path.join(output_dir, f'level_{level_idx}_connections.mp4')
     
-    # 获取第一帧的尺寸
+    # Get the dimensions of the first frame
     first_frame_path = os.path.join(temp_dir, 'level_{}_frame_000_connections.png'.format(level_idx))
     if os.path.exists(first_frame_path):
         first_frame = cv2.imread(first_frame_path)
@@ -961,7 +961,7 @@ def visualize_node_connections_video(vertices_seq, edges, node_types, output_dir
         writer.release()
         print(f"Video saved: {video_path}")
         
-        # 清理临时文件
+        # Clean up temporary files
         import shutil
         shutil.rmtree(temp_dir)
     
@@ -970,7 +970,7 @@ def visualize_node_connections_video(vertices_seq, edges, node_types, output_dir
 
 def compute_node_degrees_with_types(edges_list, node_types_list):
     """
-    计算每个 level 中每个节点的 degree（连接边数），并区分节点类型
+    Compute the degree (number of connected edges) of each node in each level, separating by node type
     
     Args:
         edges_list: List of edge arrays, each edge array is [2, num_edges]
@@ -1049,20 +1049,20 @@ def compute_node_degrees_with_types(edges_list, node_types_list):
             non_controller_indices = np.where(non_controller_mask)[0]
             non_controller_degrees = degrees[non_controller_indices] if len(non_controller_indices) > 0 else np.array([])
             
-            # 计算每个非控制节点与控制节点之间的连接 degree
-            # 遍历所有边，统计非控制节点连接到控制节点的边数
+            # Compute the connection degree between each non-controller node and controller nodes
+            # Iterate over all edges and count edges connecting non-controller nodes to controller nodes
             non_controller_to_controller_degrees = np.zeros(num_nodes, dtype=int)
             for i in range(len(src_nodes)):
                 src, dst = src_nodes[i], dst_nodes[i]
                 if src < len(node_types) and dst < len(node_types):
-                    # 如果 src 是非控制节点，dst 是控制节点
+                    # If src is a non-controller node and dst is a controller node
                     if node_types[src] != NODE_TYPE_CONTROLLER and node_types[dst] == NODE_TYPE_CONTROLLER:
                         non_controller_to_controller_degrees[src] += 1
-                    # 如果 dst 是非控制节点，src 是控制节点
+                    # If dst is a non-controller node and src is a controller node
                     elif node_types[dst] != NODE_TYPE_CONTROLLER and node_types[src] == NODE_TYPE_CONTROLLER:
                         non_controller_to_controller_degrees[dst] += 1
             
-            # 提取非控制节点的控制连接 degree
+            # Extract the controller-connection degree of non-controller nodes
             non_controller_controller_degrees = non_controller_to_controller_degrees[non_controller_indices] if len(non_controller_indices) > 0 else np.array([])
             
             # Further break down non-controller by type
@@ -1081,7 +1081,7 @@ def compute_node_degrees_with_types(edges_list, node_types_list):
             'num_nodes': num_nodes,
             'num_edges': len(src_nodes),
             'degrees': degrees,
-            'non_controller_controller_degrees': non_controller_controller_degrees,  # 保存每个非控制节点到控制节点的连接 degree
+            'non_controller_controller_degrees': non_controller_controller_degrees,  # Store the connection degree from each non-controller node to controller nodes
             'all_mean_degree': np.mean(degrees) if len(degrees) > 0 else 0,
             'all_std_degree': np.std(degrees) if len(degrees) > 0 else 0,
             'all_min_degree': np.min(degrees) if len(degrees) > 0 else 0,
@@ -1094,7 +1094,7 @@ def compute_node_degrees_with_types(edges_list, node_types_list):
             'non_controller_min_degree': np.min(non_controller_degrees) if len(non_controller_degrees) > 0 else 0,
             'non_controller_max_degree': np.max(non_controller_degrees) if len(non_controller_degrees) > 0 else 0,
             
-            # 非控制节点与控制节点的连接统计
+            # Connection statistics between non-controller and controller nodes
             'non_controller_to_controller_mean_degree': np.mean(non_controller_controller_degrees) if len(non_controller_controller_degrees) > 0 else 0,
             'non_controller_to_controller_std_degree': np.std(non_controller_controller_degrees) if len(non_controller_controller_degrees) > 0 else 0,
             'non_controller_to_controller_min_degree': np.min(non_controller_controller_degrees) if len(non_controller_controller_degrees) > 0 else 0,
@@ -1129,7 +1129,7 @@ def compute_node_degrees_with_types(edges_list, node_types_list):
                       f"mean={np.mean(controller_degrees):.2f}, "
                       f"std={np.std(controller_degrees):.2f}")
             
-            # 打印非控制节点与控制节点的连接统计
+            # Print connection statistics between non-controller and controller nodes
             if len(non_controller_controller_degrees) > 0:
                 num_connected = np.sum(non_controller_controller_degrees > 0)
                 print(f"  Non-controller to Controller connection:")
@@ -1153,10 +1153,10 @@ def compute_node_degrees_with_types(edges_list, node_types_list):
 
 def analyze_node_degree():
     """
-    分析所有 case 的节点连接度，区分 controller 和 non-controller 节点
-    完全从 mech_info 文件加载数据，不再依赖 global_best_trajectory.pkl
+    Analyze node connectivity for all cases, separating controller and non-controller nodes
+    Load data entirely from mech_info files, no longer depending on global_best_trajectory.pkl
     
-    mech_info 是 dict 格式（单个 level），不是 list
+    mech_info is in dict format (single level), not a list
     """
     all_results = []
     
@@ -1199,15 +1199,15 @@ def analyze_node_degree():
 
 def visualize_all_cases(results, output_dir=None, spring_Y_list=None, visualize_mass=False, frame_interval=10):
     """
-    可视化所有 case 的节点连接和质点质量分布
-    每 frame_interval 帧生成一次静态可视化
+    Visualize node connections and particle mass distribution for all cases
+    Generate a static visualization every frame_interval frames
     
     Args:
-        results: analyze_node_degree 返回的结果
-        output_dir: 输出目录
-        spring_Y_list: 每个 level 的弹簧杨氏模量列表 [num_edges] 或 [num_edges//2]
-        visualize_mass: 是否可视化质点质量分布
-        frame_interval: 每多少帧生成一次静态可视化（默认每 10 帧）
+        results: Results returned by analyze_node_degree
+        output_dir: Output directory
+        spring_Y_list: List of spring Young's modulus values for each level [num_edges] or [num_edges//2]
+        visualize_mass: Whether to visualize particle mass distribution
+        frame_interval: Interval in frames for static visualization (default: every 10 frames)
     """
     if output_dir is None:
         output_dir = visualization_output_dir
@@ -1238,9 +1238,9 @@ def visualize_all_cases(results, output_dir=None, spring_Y_list=None, visualize_
         
         print(f"\nVisualizing {case_name}...")
         
-        # 处理所有 level
+        # Process all levels
         for level_idx in range(len(vertices)):
-            level_verts_seq = vertices[level_idx]  # [T, N, 3] 轨迹数据
+            level_verts_seq = vertices[level_idx]  # [T, N, 3] trajectory data
 
             level_edges = edges[level_idx] if level_idx < len(edges) else None
             level_node_types = node_types[level_idx] if node_types and level_idx < len(node_types) else None
@@ -1250,7 +1250,7 @@ def visualize_all_cases(results, output_dir=None, spring_Y_list=None, visualize_
                 print(f"  Level {level_idx}: skipping due to missing data")
                 continue
             
-            # 获取轨迹帧数
+            # Get the number of trajectory frames
             if isinstance(level_verts_seq, np.ndarray):
                 num_frames = level_verts_seq.shape[0]
             elif hasattr(level_verts_seq, '__len__'):
@@ -1261,15 +1261,15 @@ def visualize_all_cases(results, output_dir=None, spring_Y_list=None, visualize_
             
             print(f"  Level {level_idx}: Processing {num_frames} frames, generating visualization every {frame_interval} frames...")
             
-            # 获取弹簧杨氏模量（如果有）
+            # Get spring Young's modulus (if available)
             spring_Y = None
             if spring_Y_list is not None and level_idx < len(spring_Y_list):
                 spring_Y = spring_Y_list[level_idx]
             
-            # 定义 3 个视角：前视图、侧视图、俯视图
+            # Define 3 view angles: front, side, top
             view_angles = ['front', 'side', 'top']
             
-            # 生成节点连接可视化（3 个不同视角）
+            # Generate node connection visualization (3 different views)
             for view_angle in view_angles:
                 conn_path = visualize_node_connections(
                     vertices=level_verts_seq,
@@ -1283,7 +1283,7 @@ def visualize_all_cases(results, output_dir=None, spring_Y_list=None, visualize_
                 )
                 print(f"    Frame {0} ({view_angle} view): Connection image saved to {conn_path}")
             
-            # 生成质点质量可视化
+            # Generate particle mass visualization
             if visualize_mass and level_masses is not None:
                 mass_path = visualize_node_masses(
                     vertices=level_verts_seq,
@@ -1302,15 +1302,15 @@ def visualize_all_cases(results, output_dir=None, spring_Y_list=None, visualize_
 
 def write_results_to_csv(results):
     """
-    将节点连接度分析结果写入 CSV 文件
-    包含所有节点类型和 non-controller 的详细统计
+    Write node degree analysis results to a CSV file
+    Includes detailed statistics for all node types and non-controller nodes
     """
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
     with open(output_file, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         
-        # 写入表头
+        # Write header
         header = [
             "Case Name",
             "Level",
@@ -1339,7 +1339,7 @@ def write_results_to_csv(results):
         ]
         writer.writerow(header)
         
-        # 写入数据 - 每个 level 一行汇总统计
+        # Write data - one summary statistics row per level
         for case_result in results:
             case_name = case_result['case_name']
             for level_info in case_result['levels']:
@@ -1376,8 +1376,8 @@ def write_results_to_csv(results):
 
 def write_detailed_results_to_csv(results):
     """
-    将详细的节点连接度结果写入 CSV 文件
-    每个 node 单独列出一行
+    Write detailed node degree results to a CSV file
+    List each node on its own row
     """
     detailed_output = output_file.replace('.csv', '_detailed.csv')
     os.makedirs(os.path.dirname(detailed_output), exist_ok=True)
@@ -1385,7 +1385,7 @@ def write_detailed_results_to_csv(results):
     with open(detailed_output, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         
-        # 写入表头
+        # Write header
         header = [
             "Case Name",
             "Level",
@@ -1394,7 +1394,7 @@ def write_detailed_results_to_csv(results):
         ]
         writer.writerow(header)
         
-        # 写入数据 - 每个 node 一行
+        # Write data - one row per node
         for case_result in results:
             case_name = case_result['case_name']
             for level_info in case_result['levels']:
@@ -1412,17 +1412,17 @@ def write_detailed_results_to_csv(results):
 
 def find_common_nodes_across_all_levels(mech_info_list):
     """
-    找到在所有层中都出现的点（从第 0 层的视角）
+    Find points that appear in all levels (from the perspective of level 0)
     
-    由于 node_ids 是对上一层结果的下采样，所以需要在上一层的 node_ids 的结果上找到对应的 node_ids，
-    逐层映射才能得到对应最上层（第 0 层）的 node_ids。
+    Since node_ids is a downsampling of the previous level's result, the corresponding node_ids must be found among the previous level's node_ids,
+    mapping level by level to obtain the node_ids corresponding to the topmost level (level 0).
     
     Args:
-        mech_info_list: 包含多个层级信息的列表，每个层级包含 'node_ids' 列表
-                       node_ids[i] 表示第 i 层的节点在第 i-1 层的索引
+        mech_info_list: List containing information for multiple levels; each level contains a 'node_ids' list
+                       node_ids[i] gives the index in level i-1 of each node in level i
     
     Returns:
-        common_node_ids: 在所有层中都出现的节点 ID 列表（第 0 层的索引）
+        common_node_ids: List of node IDs that appear in all levels (indices in level 0)
     """
     if not isinstance(mech_info_list, list) or len(mech_info_list) < 1:
         print("Warning: mech_info_list is not a list or is empty")
@@ -1434,18 +1434,18 @@ def find_common_nodes_across_all_levels(mech_info_list):
 
     print(f"Level 0: {len(current_level_node_ids)} nodes")
     
-    # 逐层映射回第 0 层
-    # 对于每一层 L，我们需要找到 L 层的节点在 0 层的索引
-    # 方法：从第 1 层开始，逐层向上映射
-    all_levels_node_ids_in_level0 = [current_level_node_ids]  # 第 0 层的所有节点
+    # Map back to level 0 level by level
+    # For each level L, we need to find the level 0 indices of the nodes in level L
+    # Method: starting from level 1, map upward level by level
+    all_levels_node_ids_in_level0 = [current_level_node_ids]  # All nodes of level 0
     
     for level_idx in range(1, len(mech_info_list)):
-        # 获取当前层在上一层的索引
+        # Get the indices of the current level in the previous level
         current_to_prev_ids = mech_info_list[level_idx]['node_ids']
         
-        # 将当前层的索引映射回第 0 层
-        # current_to_prev_ids[i] 表示当前层第 i 个节点对应上一层的节点索引
-        # 我们需要找到上一层这些节点在第 0 层的索引
+        # Map the current level's indices back to level 0
+        # current_to_prev_ids[i] is the index in the previous level of node i in the current level
+        # We need to find the level 0 indices of these nodes in the previous level
         current_level_ids_in_level0 = []
         for prev_level_idx in current_to_prev_ids:
             current_level_ids_in_level0.append(all_levels_node_ids_in_level0[-1][prev_level_idx])
@@ -1454,7 +1454,7 @@ def find_common_nodes_across_all_levels(mech_info_list):
         print(f"Level {level_idx}: {len(current_to_prev_ids)} nodes, mapped to {len(current_level_ids_in_level0)} nodes in level 0")
 
     
-    # 找到在所有层中都出现的点（求交集）
+    # Find points that appear in all levels (intersection)
     common_ids = all_levels_node_ids_in_level0[-1]
     
     print(f"\nTotal common nodes across all levels (in level 0 indices): {len(common_ids)}")
@@ -1464,34 +1464,34 @@ def find_common_nodes_across_all_levels(mech_info_list):
 
 def select_scattered_nodes(common_node_ids, vertices, num_nodes=10):
     """
-    从共同节点中选择空间上分散的节点
+    Select spatially scattered nodes from the common nodes
     
-    使用贪心算法：每次选择距离已选节点最远的节点
+    Uses a greedy algorithm: each time select the node farthest from the already selected nodes
     
     Args:
-        common_node_ids: 共同节点 ID 列表（第 0 层的索引）
-        vertices: 顶点位置 [N, 3]
-        num_nodes: 要选择的节点数量（默认 10）
+        common_node_ids: List of common node IDs (indices in level 0)
+        vertices: Vertex positions [N, 3]
+        num_nodes: Number of nodes to select (default 10)
     
     Returns:
-        selected_nodes: 选中的节点 ID 列表
+        selected_nodes: List of selected node IDs
     """
     if len(common_node_ids) <= num_nodes:
         return common_node_ids
     
-    # 转换为 numpy 数组方便计算
+    # Convert to numpy array for easier computation
     if isinstance(vertices, torch.Tensor):
         vertices = vertices.cpu().numpy()
     
-    # 获取共同节点的坐标
+    # Get coordinates of the common nodes
     common_coords = vertices[common_node_ids]
     
-    # 初始化：随机选择第一个节点（选择中间位置的节点）
+    # Initialize: select the first node (choose the node at the middle position)
     mid_idx = len(common_node_ids) // 2
     selected_indices = [mid_idx]
     selected_coords = [common_coords[mid_idx]]
     
-    # 贪心选择：每次选择距离已选节点最远的节点
+    # Greedy selection: each time select the node farthest from the already selected nodes
     while len(selected_indices) < num_nodes:
         max_min_dist = -1
         best_idx = -1
@@ -1500,14 +1500,14 @@ def select_scattered_nodes(common_node_ids, vertices, num_nodes=10):
             if i in selected_indices:
                 continue
             
-            # 计算该节点到所有已选节点的最小距离
+            # Compute the minimum distance from this node to all selected nodes
             coord = common_coords[i]
             min_dist = float('inf')
             for sel_coord in selected_coords:
                 dist = np.linalg.norm(coord - sel_coord)
                 min_dist = min(min_dist, dist)
             
-            # 更新最佳选择
+            # Update the best choice
             if min_dist > max_min_dist:
                 max_min_dist = min_dist
                 best_idx = i
@@ -1518,7 +1518,7 @@ def select_scattered_nodes(common_node_ids, vertices, num_nodes=10):
         else:
             break
     
-    # 返回选中的节点 ID
+    # Return the selected node IDs
     selected_nodes = [common_node_ids[i] for i in selected_indices]
     print(f"Selected {len(selected_nodes)} scattered nodes from {len(common_node_ids)} common nodes")
     
@@ -1536,26 +1536,26 @@ def visualize_selected_nodes_with_forces_per_frame(
     axis_limits=None
 ):
     """
-    可视化同一 frame 下不同 level 的选中节点的受力和 topo 对比
+    Visualize force and topology comparison of selected nodes across levels for the same frame
     
     Args:
-        mech_info_list: 多层级 mech_info 列表
-        selected_node_ids: 第 0 层选定的节点 ID 列表
-        pred_vertices_list: 各层的预测顶点轨迹列表
-        output_dir: 输出目录
-        frame_idx: 帧索引
-        global_norm: 全局归一化器（用于统一的力的大小着色）
-        node_colors: 每个选中节点的固定颜色（用于跨层识别）
-        axis_limits: 统一的坐标轴范围字典 {'x_min': ..., 'x_max': ..., 'y_min': ..., 'y_max': ..., 'z_min': ..., 'z_max': ...}
+        mech_info_list: List of multi-level mech_info
+        selected_node_ids: List of node IDs selected in level 0
+        pred_vertices_list: List of predicted vertex trajectories for each level
+        output_dir: Output directory
+        frame_idx: Frame index
+        global_norm: Global normalizer (for unified force magnitude coloring)
+        node_colors: Fixed color for each selected node (for cross-level identification)
+        axis_limits: Unified axis limit dict {'x_min': ..., 'x_max': ..., 'y_min': ..., 'y_max': ..., 'z_min': ..., 'z_max': ...}
     
     Returns:
-        global_norm: 全局归一化器
+        global_norm: Global normalizer
     """
     os.makedirs(output_dir, exist_ok=True)
     
     num_levels = len(mech_info_list)
     
-    # 为每一层构建邻接表
+    # Build an adjacency list for each level
     adjacency_list = []
     for level_idx in range(num_levels):
         edges = mech_info_list[level_idx].get('edges')
@@ -1578,7 +1578,7 @@ def visualize_selected_nodes_with_forces_per_frame(
                     adjacency[j].append(i)
         adjacency_list.append(adjacency)
     
-    # 获取所有层的顶点用于统一坐标轴范围（如果没有提供）
+    # Get vertices from all levels for unified axis limits (if not provided)
     if axis_limits is None:
         all_verts = []
         for level_idx, vertices_seq in enumerate(pred_vertices_list):
@@ -1597,7 +1597,7 @@ def visualize_selected_nodes_with_forces_per_frame(
         z_min = axis_limits['z_min']
         z_max = axis_limits['z_max']
     
-    # 计算每一层的力
+    # Compute forces for each level
     T = pred_vertices_list[0].shape[0]
     forces_list = []
     accelerations_list = []
@@ -1623,13 +1623,13 @@ def visualize_selected_nodes_with_forces_per_frame(
         forces_list.append(forces)
         accelerations_list.append(accelerations)
     
-    # 计算全局力的范围用于统一着色
+    # Compute global force range for unified coloring
     if global_norm is None:
         all_forces = np.concatenate(forces_list, axis=0)
         max_force = np.max(all_forces) if np.max(all_forces) > 0 else 1.0
         global_norm = Normalize(vmin=0, vmax=max_force)
     
-    # 创建图形：水平排列所有层
+    # Create figure: arrange all levels horizontally
     fig = plt.figure(figsize=(6 * num_levels, 5))
     
     for level_idx in range(num_levels):
@@ -1641,10 +1641,10 @@ def visualize_selected_nodes_with_forces_per_frame(
         accelerations = accelerations_list[level_idx]
         adjacency = adjacency_list[level_idx]
         
-        # 映射节点 ID 到当前层，并保留原始索引用于颜色查找
+        # Map node IDs to the current level, keeping the original index for color lookup
         mapped_node_ids = map_node_ids_to_level(selected_node_ids, mech_info_list, level_idx)
         
-        # 只绘制选中节点的 topo 连接和受力
+        # Only draw topology connections and forces of selected nodes
         for orig_idx, node_id in enumerate(mapped_node_ids):
             if node_id is None or node_id >= len(frame_verts):
                 continue
@@ -1652,14 +1652,14 @@ def visualize_selected_nodes_with_forces_per_frame(
             node_pos = frame_verts[node_id]
             node_force = forces[node_id]
             
-            # 获取该节点的邻居
+            # Get the neighbors of this node
             neighbors = adjacency.get(node_id, [])
             
-            # 绘制该节点到邻居的连接（彩色粗线，根据力的大小着色）
+            # Draw connections from this node to its neighbors (thick colored lines, colored by force magnitude)
             for neighbor_id in neighbors:
                 if neighbor_id < len(frame_verts):
                     neighbor_pos = frame_verts[neighbor_id]
-                    # 使用力的大小着色连接
+                    # Color the connection by force magnitude
                     edge_color = cm.RdYlBu_r(global_norm(node_force))
                     ax.plot(
                         [node_pos[0], neighbor_pos[0]],
@@ -1668,21 +1668,21 @@ def visualize_selected_nodes_with_forces_per_frame(
                         c=edge_color, alpha=0.9, linewidth=2.5
                     )
             
-            # 绘制节点本身 - 使用固定颜色（跨层识别同一个点）
-            # orig_idx 是 selected_node_ids 中的原始索引，直接用于查找颜色
+            # Draw the node itself - use a fixed color (identify the same point across levels)
+            # orig_idx is the original index in selected_node_ids, used directly for color lookup
             if node_colors is not None and orig_idx < len(node_colors):
                 node_color = node_colors[orig_idx]
             else:
                 node_color = cm.RdYlBu_r(global_norm(node_force))
             
-            # 为每个节点添加图例（只显示一次）
+            # Add a legend entry for each node (only shown once)
             label = f'Node {selected_node_ids[orig_idx]}' if level_idx == 0 else None
             
             ax.scatter(node_pos[0], node_pos[1], node_pos[2], 
                       c=[node_color], s=150, alpha=1.0, edgecolors='black', linewidth=1.5,
                       label=label)
             
-            # 绘制力的方向箭头
+            # Draw the force direction arrow
             if frame_idx < T - 1:
                 accel = accelerations[node_id]
                 arrow_scale = 0.02
@@ -1690,7 +1690,7 @@ def visualize_selected_nodes_with_forces_per_frame(
                          accel[0] * arrow_scale, accel[1] * arrow_scale, accel[2] * arrow_scale,
                          color='red', alpha=0.8, arrow_length_ratio=0.3, linewidth=2)
         
-        # 设置坐标轴范围
+        # Set axis limits
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
         ax.set_zlim(z_min, z_max)
@@ -1703,10 +1703,10 @@ def visualize_selected_nodes_with_forces_per_frame(
         if level_idx == 0:
             ax.legend(loc='best')
     
-    # 添加总标题
+    # Add overall title
     fig.suptitle(f'Selected Nodes with Forces - Frame {frame_idx}', fontsize=14, y=1.05)
     
-    # 保存帧
+    # Save frame
     frame_path = os.path.join(output_dir, f'frame_{frame_idx:05d}_comparison.png')
     plt.savefig(frame_path, dpi=100, bbox_inches='tight')
     plt.close(fig)
@@ -1724,16 +1724,16 @@ def visualize_selected_nodes_comparison_video(
     node_colors=None
 ):
     """
-    创建同一 frame 下不同 level 的选中节点受力对比视频
+    Create a video comparing selected node forces across levels for the same frame
     
     Args:
-        mech_info_list: 多层级 mech_info 列表
-        selected_node_ids: 第 0 层选定的节点 ID 列表
-        pred_vertices_list: 各层的预测顶点轨迹列表
-        output_dir: 输出目录
-        frame_indices: 要可视化的帧索引列表
-        fps: 帧率
-        node_colors: 每个选中节点的固定颜色（用于跨层识别）
+        mech_info_list: List of multi-level mech_info
+        selected_node_ids: List of node IDs selected in level 0
+        pred_vertices_list: List of predicted vertex trajectories for each level
+        output_dir: Output directory
+        frame_indices: List of frame indices to visualize
+        fps: Frame rate
+        node_colors: Fixed color for each selected node (for cross-level identification)
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -1746,11 +1746,11 @@ def visualize_selected_nodes_comparison_video(
     
     print(f"Creating per-frame comparison visualization for {num_levels} levels, {len(frame_indices)} frames...")
     
-    # 创建临时目录保存帧
+    # Create a temporary directory to save frames
     temp_dir = os.path.join(output_dir, 'temp_per_frame_comparison')
     os.makedirs(temp_dir, exist_ok=True)
     
-    # 计算所有层的统一坐标轴范围
+    # Compute unified axis limits across all levels
     all_verts = []
     for level_idx, vertices_seq in enumerate(pred_vertices_list):
         if vertices_seq is not None:
@@ -1772,7 +1772,7 @@ def visualize_selected_nodes_comparison_video(
     global_norm = None
     frame_paths = []
     
-    # 渲染每一帧
+    # Render each frame
     for frame_idx in tqdm(frame_indices, desc="Rendering per-frame comparison"):
         global_norm, frame_path = visualize_selected_nodes_with_forces_per_frame(
             mech_info_list=mech_info_list,
@@ -1786,7 +1786,7 @@ def visualize_selected_nodes_comparison_video(
         )
         frame_paths.append(frame_path)
     
-    # 将图像转换为视频
+    # Convert images to video
     video_path = os.path.join(output_dir, 'per_frame_comparison.mp4')
     
     if len(frame_paths) > 0 and os.path.exists(frame_paths[0]):
@@ -1803,7 +1803,7 @@ def visualize_selected_nodes_comparison_video(
         writer.release()
         print(f"Per-frame comparison video saved: {video_path}")
         
-        # # 清理临时文件
+        # # Clean up temporary files
         # import shutil
         # shutil.rmtree(temp_dir)
     
@@ -1812,52 +1812,52 @@ def visualize_selected_nodes_comparison_video(
 
 def map_node_ids_to_level(selected_node_ids, mech_info_list, target_level):
     """
-    将第 0 层的节点 ID 映射到目标层
+    Map node IDs from level 0 to the target level
     
-    由于 node_ids 是下采样索引，需要找到第 0 层的节点在目标层的对应索引
+    Since node_ids are downsampling indices, we need to find the corresponding indices of level 0 nodes in the target level
     
-    映射逻辑：
-    - mech_info_list[level]['node_ids'] 是一个索引列表
-    - 表示该层的节点在上一层的索引
-    - 例如：level 1 的 node_ids = [0, 2, 5, ...] 表示 level 1 的第 0 个节点对应 level 0 的第 0 个节点，
-      level 1 的第 1 个节点对应 level 0 的第 2 个节点，以此类推
+    Mapping logic:
+    - mech_info_list[level]['node_ids'] is a list of indices
+    - It gives the indices of that level's nodes in the previous level
+    - For example: level 1's node_ids = [0, 2, 5, ...] means level 1's 0th node corresponds to level 0's 0th node,
+      level 1's 1st node corresponds to level 0's 2nd node, and so on
     
-    要从 level 0 映射到 level N，需要反向查找：
-    - 对于 level 0 的节点 ID，找到它在 level 1 的索引（如果存在）
-    - 然后找到它在 level 2 的索引，依此类推
+    To map from level 0 to level N, we need to look up in reverse:
+    - For a level 0 node ID, find its index in level 1 (if it exists)
+    - Then find its index in level 2, and so on
     
     Args:
-        selected_node_ids: 第 0 层的节点 ID 列表
-        mech_info_list: 多层级 mech_info 列表
-        target_level: 目标层级索引
+        selected_node_ids: List of node IDs in level 0
+        mech_info_list: List of multi-level mech_info
+        target_level: Target level index
     
     Returns:
-        mapped_node_ids: 目标层中的节点 ID 列表（可能少于输入，因为有些节点可能被下采样掉了）
+        mapped_node_ids: List of node IDs in the target level (may be fewer than the input, since some nodes may have been downsampled away)
     """
     if target_level == 0:
         return selected_node_ids
     
-    # 从第 0 层开始，逐层向下映射
-    # current_ids_in_prev 表示当前层节点在上一层（最初是第 0 层）的索引
+    # Starting from level 0, map downward level by level
+    # current_ids_in_prev gives the indices in the previous level (initially level 0) of the current level's nodes
     current_ids_in_prev = np.array(mech_info_list[0]['node_ids'])
     
     for level_idx in range(1, target_level + 1):
-        # 获取当前层在上一层的索引
+        # Get the indices of the current level in the previous level
         prev_to_current_ids = mech_info_list[level_idx]['node_ids']
         
-        # 更新 current_ids_in_prev：现在表示当前层节点在第 0 层的索引
+        # Update current_ids_in_prev: it now gives the level 0 indices of the current level's nodes
         current_ids_in_prev = current_ids_in_prev[prev_to_current_ids]
     
-    # 现在 current_ids_in_prev 表示 target_level 层的节点在第 0 层的索引
-    # 我们需要找到 selected_node_ids 中的节点在 target_level 层的索引
+    # Now current_ids_in_prev gives the level 0 indices of the nodes in target_level
+    # We need to find the indices in target_level of the nodes in selected_node_ids
     mapped_ids = []
     for selected_id in selected_node_ids:
-        # 在 current_ids_in_prev 中查找 selected_id
+        # Look up selected_id in current_ids_in_prev
         idx_in_target = np.where(current_ids_in_prev == selected_id)[0]
         if len(idx_in_target) > 0:
             mapped_ids.append(int(idx_in_target[0]))
         else:
-            mapped_ids.append(None)  # 该节点在目标层不存在
+            mapped_ids.append(None)  # This node does not exist in the target level
     
     return mapped_ids
 
@@ -1871,15 +1871,15 @@ def visualize_all_levels_comparison(
     fps=5
 ):
     """
-    可视化所有层的共同节点对比
+    Visualize a comparison of common nodes across all levels
     
     Args:
-        mech_info_list: 多层级 mech_info 列表
-        selected_node_ids: 第 0 层选定的节点 ID 列表
-        pred_vertices_list: 各层的预测顶点轨迹列表
-        output_dir: 输出目录
-        frame_indices: 要可视化的帧索引列表
-        fps: 帧率
+        mech_info_list: List of multi-level mech_info
+        selected_node_ids: List of node IDs selected in level 0
+        pred_vertices_list: List of predicted vertex trajectories for each level
+        output_dir: Output directory
+        frame_indices: List of frame indices to visualize
+        fps: Frame rate
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -1892,11 +1892,11 @@ def visualize_all_levels_comparison(
     
     print(f"Creating comparison visualization for {num_levels} levels, {len(frame_indices)} frames...")
     
-    # 创建临时目录保存帧
+    # Create a temporary directory to save frames
     temp_dir = os.path.join(output_dir, 'temp_comparison_all_levels')
     os.makedirs(temp_dir, exist_ok=True)
     
-    # 获取所有层的统一坐标轴范围
+    # Get unified axis limits across all levels
     all_verts = []
     for level_idx, vertices_seq in enumerate(pred_vertices_list):
         if vertices_seq is not None:
@@ -1907,7 +1907,7 @@ def visualize_all_levels_comparison(
     y_min, y_max = all_verts[:, 1].min() - margin, all_verts[:, 1].max() + margin
     z_min, z_max = all_verts[:, 2].min() - margin, all_verts[:, 2].max() + margin
     
-    # 为每一层构建邻接表
+    # Build an adjacency list for each level
     adjacency_list = []
     for level_idx in range(num_levels):
         edges = mech_info_list[level_idx].get('edges')
@@ -1930,21 +1930,21 @@ def visualize_all_levels_comparison(
                     adjacency[j].append(i)
         adjacency_list.append(adjacency)
     
-    # 渲染每一帧
+    # Render each frame
     for frame_idx in tqdm(frame_indices, desc="Rendering comparison"):
         fig = plt.figure(figsize=(20, 5 * num_levels))
         
         for level_idx in range(num_levels):
             ax = fig.add_subplot(num_levels, 1, level_idx + 1, projection='3d')
             
-            # 获取当前层的顶点
+            # Get the vertices of the current level
             vertices_seq = pred_vertices_list[level_idx] if level_idx < len(pred_vertices_list) else None
             if vertices_seq is None:
                 continue
             
             frame_verts = vertices_seq[frame_idx]
             
-            # 计算力的大小
+            # Compute force magnitude
             if frame_idx > 0 and frame_idx < T - 1:
                 prev_verts = vertices_seq[frame_idx - 1]
                 next_verts = vertices_seq[frame_idx + 1]
@@ -1962,14 +1962,14 @@ def visualize_all_levels_comparison(
                 forces = np.zeros(len(frame_verts))
                 accelerations = np.zeros((len(frame_verts), 3))
             
-            # 归一化力的大小
+            # Normalize force magnitude
             max_force = np.max(forces) if np.max(forces) > 0 else 1.0
             norm = Normalize(vmin=0, vmax=max_force)
             
-            # 映射节点 ID 到当前层
+            # Map node IDs to the current level
             mapped_node_ids = map_node_ids_to_level(selected_node_ids, mech_info_list, level_idx)
             
-            # 只绘制选中节点的 topo 连接和受力
+            # Only draw topology connections and forces of selected nodes
             for node_id in mapped_node_ids:
                 if node_id >= len(frame_verts):
                     continue
@@ -1977,11 +1977,11 @@ def visualize_all_levels_comparison(
                 node_pos = frame_verts[node_id]
                 node_force = forces[node_id]
                 
-                # 获取该节点的邻居
+                # Get the neighbors of this node
                 adjacency = adjacency_list[level_idx]
                 neighbors = adjacency.get(node_id, [])
                 
-                # 绘制该节点到邻居的连接
+                # Draw connections from this node to its neighbors
                 for neighbor_id in neighbors:
                     if neighbor_id < len(frame_verts):
                         neighbor_pos = frame_verts[neighbor_id]
@@ -1993,13 +1993,13 @@ def visualize_all_levels_comparison(
                             c=color, alpha=0.9, linewidth=2.5
                         )
                 
-                # 绘制节点本身
+                # Draw the node itself
                 color = cm.RdYlBu_r(norm(node_force))
                 ax.scatter(node_pos[0], node_pos[1], node_pos[2], 
                           c=[color], s=150, alpha=1.0, edgecolors='black', linewidth=1.5,
                           label=f'Node {node_id}' if node_id == mapped_node_ids[0] else None)
                 
-                # 绘制力的方向箭头
+                # Draw the force direction arrow
                 if frame_idx < T - 1:
                     accel = accelerations[node_id]
                     arrow_scale = 0.02
@@ -2007,7 +2007,7 @@ def visualize_all_levels_comparison(
                              accel[0] * arrow_scale, accel[1] * arrow_scale, accel[2] * arrow_scale,
                              color='red', alpha=0.8, arrow_length_ratio=0.3, linewidth=2)
             
-            # 设置坐标轴范围
+            # Set axis limits
             ax.set_xlim(x_min, x_max)
             ax.set_ylim(y_min, y_max)
             ax.set_zlim(z_min, z_max)
@@ -2020,15 +2020,15 @@ def visualize_all_levels_comparison(
             if level_idx == 0:
                 ax.legend(loc='best')
         
-        # 添加总标题
+        # Add overall title
         fig.suptitle(f'All Levels Comparison - Frame {frame_idx}', fontsize=16, y=1.02)
         
-        # 保存帧
+        # Save frame
         frame_path = os.path.join(temp_dir, f'frame_{frame_idx:05d}.png')
         plt.savefig(frame_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
     
-    # 将图像转换为视频
+    # Convert images to video
     video_path = os.path.join(output_dir, 'all_levels_comparison.mp4')
     
     first_frame_path = os.path.join(temp_dir, 'frame_00000.png')
@@ -2047,7 +2047,7 @@ def visualize_all_levels_comparison(
         writer.release()
         print(f"All levels comparison video saved: {video_path}")
         
-        # 清理临时文件
+        # Clean up temporary files
         import shutil
         shutil.rmtree(temp_dir)
     
@@ -2056,23 +2056,23 @@ def visualize_all_levels_comparison(
 
 def run_simulation_for_level(mech_info, dataset, level_idx, num_frames=None):
     """
-    为指定层级运行仿真
+    Run simulation for the specified level
     
     Args:
-        mech_info: 该层的力学参数（dict，包含 list 形式的多层级数据）
-        dataset: 数据集实例
-        level_idx: 层级索引
-        num_frames: 仿真帧数
+        mech_info: Mechanical parameters (dict containing multi-level data in list form)
+        dataset: Dataset instance
+        level_idx: Level index
+        num_frames: Number of simulation frames
     
     Returns:
-        pred_vertices: 预测的顶点轨迹 [T, N, 3]
+        pred_vertices: Predicted vertex trajectory [T, N, 3]
     """
     if num_frames is None:
         num_frames = cfg.train_frame + cfg.test_frame
     
-    # 提取参数 - 注意这些都是 list，存储着不同 level 的结果
-    # mech_info 中的 vertices, edges 等都是 list，每个元素对应一个 level
-    # 需要根据 level_idx 提取对应层的数据
+    # Extract parameters - note these are lists storing results for different levels
+    # vertices, edges, etc. in mech_info are lists, each element corresponding to one level
+    # The data for the corresponding level must be extracted according to level_idx
     vertices = mech_info['vertices'][level_idx] if isinstance(mech_info['vertices'], list) else mech_info['vertices']
     edges = mech_info['edges'][level_idx] if isinstance(mech_info['edges'], list) else mech_info['edges']
     node_type = mech_info['node_type'][level_idx] if isinstance(mech_info['node_type'], list) else mech_info['node_type']
@@ -2082,7 +2082,7 @@ def run_simulation_for_level(mech_info, dataset, level_idx, num_frames=None):
     gt_motions_valid_list = mech_info.get('gt_motions_valid', None)
     gt_motions_valid = gt_motions_valid_list[level_idx] if (gt_motions_valid_list is not None and isinstance(gt_motions_valid_list, list)) else gt_motions_valid_list
     
-    # 计算 rest_lengths
+    # Compute rest_lengths
     if isinstance(edges, torch.Tensor):
         spring_graph = edges.int().T.contiguous()
     else:
@@ -2093,7 +2093,7 @@ def run_simulation_for_level(mech_info, dataset, level_idx, num_frames=None):
         dim=1
     )
     
-    # 创建 simulator
+    # Create simulator
    
     simulator = dataset.create_spring_mass_sim(
         init_vertices=vertices.cuda(),
@@ -2106,7 +2106,7 @@ def run_simulation_for_level(mech_info, dataset, level_idx, num_frames=None):
         gt_object_motions_valid=gt_motions_valid.cuda(),
     )
     
-    # 设置力学参数 - 根据 level_idx 提取对应层的数据
+    # Set mechanical parameters - extract the corresponding level's data according to level_idx
     if 'log_spring_Y' in mech_info:
         log_spring_Y = mech_info['log_spring_Y'][level_idx] if isinstance(mech_info['log_spring_Y'], list) else mech_info['log_spring_Y']
         wp_spring_Y = wp.from_torch(log_spring_Y.cuda().contiguous(), dtype=wp.float32, requires_grad=False)
@@ -2142,10 +2142,10 @@ def run_simulation_for_level(mech_info, dataset, level_idx, num_frames=None):
         wp_obj_fric = wp.from_torch(collision_object_fric.cuda().reshape(1).contiguous(), dtype=wp.float32, requires_grad=False)
         simulator.set_collision_object_fric(wp_obj_fric)
     
-    # 运行仿真
+    # Run simulation
     print(f"Running simulation for level {level_idx} with {vertices.shape[0]} nodes, {num_frames} frames...")
     
-    # 初始化状态
+    # Initialize state
     simulator.set_init_state(
         simulator.wp_init_vertices,
         simulator.wp_init_velocities
@@ -2154,25 +2154,25 @@ def run_simulation_for_level(mech_info, dataset, level_idx, num_frames=None):
     pred_vertices = []
     
     for frame_idx in tqdm(range(num_frames), desc=f"Running simulation level {level_idx}"):
-        # 获取当前帧的预测结果
+        # Get the prediction for the current frame
         x = wp.to_torch(simulator.wp_states[0].wp_x, requires_grad=False).cpu().numpy()
         pred_vertices.append(x.copy())
         
-        # 设置控制器目标（如果是 real 数据）
+        # Set controller target (for real data)
         if cfg.data_type == "real":
             simulator.set_controller_target(frame_idx, pure_inference=False)
         
-        # 更新碰撞图
+        # Update collision graph
         if simulator.object_collision_flag:
             simulator.update_collision_graph()
         
-        # 运行一步仿真
+        # Run one simulation step
         if cfg.use_graph:
             wp.capture_launch(simulator.forward_graph)
         else:
             simulator.step()
         
-        # 更新状态
+        # Update state
         simulator.set_init_state(
             simulator.wp_states[-1].wp_x,
             simulator.wp_states[-1].wp_v
@@ -2186,57 +2186,57 @@ def run_simulation_for_level(mech_info, dataset, level_idx, num_frames=None):
 
 def run_warp_simulator_analysis():
     """
-    运行 warp simulator 分析并可视化预测结果和真值
-    包含新的可视化：找到在所有层中都出现的点，可视化其连接关系和受力
+    Run warp simulator analysis and visualize predictions and ground truth
+    Includes new visualizations: find points that appear in all levels and visualize their connections and forces
     
-    修改：
-    1. 为每一层重新构建仿真器获取轨迹
-    2. 对于不同层级来自于同一个点的点使用相同的颜色进行绘制
+    Changes:
+    1. Rebuild the simulator for each level to obtain trajectories
+    2. Draw points that originate from the same point across different levels using the same color
     """
-    # 配置参数
+    # Configuration parameters
     node_info_path = ""
     
-    # 力学参数路径（训练好的模型参数）
+    # Mechanical parameter path (trained model parameters)
     mech_info_path = "/mnt/pool1/cxy/phystwin-v2/real2sim-eval/log/Real2sim_Reduction/sloth_0001/E2E/spring_mech_info/global_best_mech_info.pth"
     
-    # 输出目录
+    # Output directory
     output_dir = "./visualization/warp_simulator_results/"
     
     # ============================================================
-    # 新增：加载多层级 mech_info 并可视化共同节点的连接和受力
+    # Added: load multi-level mech_info and visualize connections and forces of common nodes
     # ============================================================
     print("\n" + "="*60)
     print("Loading multi-level mech_info for common node analysis...")
     print("="*60)
     
-    # 加载包含多层级信息的 mech_info
-    # global_best_mech_info.pth 包含 {'mech': [level0_info, level1_info, ...]}
+    # Load mech_info containing multi-level information
+    # global_best_mech_info.pth contains {'mech': [level0_info, level1_info, ...]}
     if os.path.exists(mech_info_path):
         loaded_data = torch.load(mech_info_path, map_location='cpu')
         
-        # 处理保存的数据格式：{'mech': [...]} 或直接是 mech_info 字典
+        # Handle the saved data format: {'mech': [...]} or a direct mech_info dict
         if isinstance(loaded_data, dict) and 'mech' in loaded_data:
             mech_info_list = loaded_data['mech']
             print(f"Loaded {len(mech_info_list)} levels of mech_info")
         else:
-            # 直接是 mech_info 字典（单层）
+            # Directly a mech_info dict (single level)
             mech_info_list = [loaded_data]
             print(f"Loaded single level mech_info")
         
-        # 检查是否有 node_ids 信息
+        # Check whether node_ids information is available
         has_node_ids = all('node_ids' in info and info['node_ids'] is not None 
                           for info in mech_info_list)
         
         if has_node_ids:
-            # 找到在所有层中都出现的点
+            # Find points that appear in all levels
             common_node_ids = find_common_nodes_across_all_levels(mech_info_list)
             
-            # 选择最多 10 个空间上分散的点
+            # Select up to 10 spatially scattered points
             if len(common_node_ids) > 0:
-                # 使用第 0 层的顶点位置来选择分散的节点
+                # Use level 0 vertex positions to select scattered nodes
                 vertices = mech_info_list[0].get('vertices')
                 if vertices is not None:
-                    # vertices 可能是 list，取第一个元素
+                    # vertices may be a list; take the first element
                     if isinstance(vertices, list):
                         vertices = vertices[0]
                     selected_nodes = select_scattered_nodes(common_node_ids, vertices, num_nodes=10)
@@ -2244,11 +2244,11 @@ def run_warp_simulator_analysis():
                     selected_nodes = common_node_ids[:10]
                 print(f"Selected {len(selected_nodes)} scattered common nodes for visualization: {selected_nodes}")
                 
-                # 为每一层重新构建仿真器并获取轨迹
+                # Rebuild the simulator for each level and obtain trajectories
                 print("\nRunning simulation for each level...")
                 pred_vertices_list = []
                 
-                # 创建数据集实例用于创建 simulator
+                # Create a dataset instance for creating the simulator
                 class Args:
                     def __init__(self):
                         self.object_case = "double_lift_zebra"
@@ -2269,22 +2269,22 @@ def run_warp_simulator_analysis():
                     device='cuda:0'
                 )
                 
-                # 为每一层运行仿真
+                # Run simulation for each level
                 for level_idx, mech_info in enumerate(mech_info_list):
                     print(f"\n--- Running simulation for Level {level_idx} ---")
                     level_pred_vertices = run_simulation_for_level(mech_info, dataset, level_idx)
                     pred_vertices_list.append(level_pred_vertices)
                 
-                # 为每个选中的节点分配固定颜色（用于跨层识别）
+                # Assign a fixed color to each selected node (for cross-level identification)
                 node_colors = plt.cm.tab10(np.linspace(0, 1, len(selected_nodes)))
                 print(f"\nNode colors (for cross-level identification):")
                 for i, (node_id, color) in enumerate(zip(selected_nodes, node_colors)):
                     print(f"  Node {node_id}: RGB({color[0]:.2f}, {color[1]:.2f}, {color[2]:.2f})")
                 
-                # 为每一层可视化
+                # Visualize for each level
                 selected_nodes_output_dir = os.path.join(output_dir, "selected_nodes_visualization")
                 
-                # 创建同一 frame 下不同 level 的对比可视化（使用固定颜色）
+                # Create a comparison visualization of different levels for the same frame (using fixed colors)
                 visualize_selected_nodes_comparison_video(
                     mech_info_list=mech_info_list,
                     selected_node_ids=selected_nodes,
@@ -2327,21 +2327,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.mode == "warp":
-        # 运行 warp simulator 分析
+        # Run warp simulator analysis
         run_warp_simulator_analysis()
     else:
-        # 运行节点度分析
+        # Run node degree analysis
         print(f"Starting node degree analysis for End2End_Reduction...")
         print(f"Prediction directory: {prediction_path}")
         print(f"Base path: {base_path}")
         
         results = analyze_node_degree()
         
-        # 写入 CSV 结果
+        # Write CSV results
         write_results_to_csv(results)
         write_detailed_results_to_csv(results)
         
-        # 创建节点连接可视化
+        # Create node connection visualization
         visualize_all_cases(results, visualize_mass=args.visualize_mass)
         
         print("\nNode degree analysis and visualization completed!")

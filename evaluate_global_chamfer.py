@@ -1,4 +1,3 @@
-import glob
 import pickle
 import json
 import torch
@@ -11,7 +10,7 @@ import cv2
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 
-# 配置参数
+# Configuration parameters
 method_case_name = 'End2End_Reduction'  # 'neural_spring_field'  # 'evospring' # 'End2End' # End2End_Reduction
 prediction_dir = f"./res/{method_case_name}/"
 base_path = "./data/different_types/"
@@ -32,7 +31,7 @@ def evaluate_prediction(
     num_surface_points,
 ):
     """
-    评估预测轨迹与真值物体点云之间的 Chamfer Distance
+    Evaluate the Chamfer Distance between the predicted trajectory and the ground-truth object point cloud
     """
     chamfer_errors = []
 
@@ -75,9 +74,9 @@ def evaluate_prediction(
 
 def load_global_trajectory(dir_name):
     """
-    从全局最优轨迹文件中加载数据
-    
-    返回：vertices (所有 level 的列表), masses, edges, gt_indices
+    Load data from the global best trajectory file
+
+    Returns: vertices (list of all levels), masses, edges, gt_indices
     """
     lastest_timestamp = sorted(os.listdir(dir_name))[-1]
 
@@ -93,7 +92,7 @@ def load_global_trajectory(dir_name):
     vertices = data.get('vertices', None)  # List of [T, N_level, 3] for each level
     masses = data.get('masses', None)      # List of [N_level] for each level
     edges = data.get('edges', None)        # List of [2, E_level] for each level
-    gt_indices = data.get('gt_indices', None)  # 真值下采样索引（第 0 层的）
+    gt_indices = data.get('gt_indices', None)  # ground-truth downsampling indices (for level 0)
     
     return vertices, masses, edges, gt_indices
 
@@ -101,17 +100,17 @@ def load_global_trajectory(dir_name):
 def evaluate_chamfer_distance(pred_vertices, gt_object_points, gt_visibilities, 
                                num_original_points, num_surface_points):
     """
-    计算 Chamfer Distance between predicted vertices and ground truth object points
+    Compute the Chamfer Distance between predicted vertices and ground truth object points
     
     Args:
-        pred_vertices: 预测的顶点轨迹 [T, N, 3]
-        gt_object_points: 真值物体点云 [T, M, 3]
-        gt_visibilities: 真值可见性掩码 [T, M]
-        num_original_points: 原始表面点数量
-        num_surface_points: 表面点 + 内部点总数
-    
+        pred_vertices: predicted vertex trajectory [T, N, 3]
+        gt_object_points: ground-truth object point cloud [T, M, 3]
+        gt_visibilities: ground-truth visibility mask [T, M]
+        num_original_points: number of original surface points
+        num_surface_points: total number of surface points + interior points
+
     Returns:
-        chamfer_errors: 每帧的 Chamfer 误差列表
+        chamfer_errors: list of Chamfer errors per frame
     """
     chamfer_errors = []
     
@@ -127,19 +126,19 @@ def evaluate_chamfer_distance(pred_vertices, gt_object_points, gt_visibilities,
         gt_frame = gt_object_points[frame_idx]
         gt_vis = gt_visibilities[frame_idx]
         
-        # 获取可见的真值点
+        # Get visible ground-truth points
         visible_gt_points = gt_frame[gt_vis]
         
         if len(visible_gt_points) == 0 or len(pred_frame) == 0:
             chamfer_errors.append(0.0)
             continue
         
-        # 计算双向 Chamfer Distance
-        # 从 GT 到 Pred 的距离
+        # Compute bidirectional Chamfer Distance
+        # Distance from GT to Pred
         tree_pred = KDTree(pred_frame.cpu().numpy())
         dist_gt_to_pred, _ = tree_pred.query(visible_gt_points.cpu().numpy(), k=1)
         
-        # 从 Pred 到 GT 的距离
+        # Distance from Pred to GT
         tree_gt = KDTree(visible_gt_points.cpu().numpy())
         dist_pred_to_gt, _ = tree_gt.query(pred_frame.cpu().numpy(), k=1)
         
@@ -152,26 +151,26 @@ def evaluate_chamfer_distance(pred_vertices, gt_object_points, gt_visibilities,
 
 def evaluate_global_results():
     """
-    全局最优结果评估主函数
-    评估全局最优轨迹中每个 level 的 Chamfer Distance
+    Main function for global best result evaluation
+    Evaluate the Chamfer Distance for each level in the global best trajectory
     """
     results = []
     
-    dir_names = glob.glob(f"{prediction_dir}/*")
-    for dir_name in dir_names:
-        case_name = dir_name.split("/")[-1]
+    dir_names = os.listdir(prediction_dir)
+    for case_name in dir_names:
+        # case_name = dir_name.split("/")[-1]
         print(f"\n{'='*60}")
         print(f"Processing {case_name}")
         print(f"{'='*60}\n")
         
-        # 读取数据分割信息
+        # Read data split information
         with open(f"{base_path}/{case_name}/split.json", "r") as f:
             split = json.load(f)
         frame_len = split["frame_len"]
         train_frame = split["train"][1]
         test_frame = split["test"][1]
         
-        # 读取真值数据
+        # Read ground-truth data
         with open(f"{base_path}/{case_name}/final_data.pkl", "rb") as f:
             data = pickle.load(f)
         
@@ -186,14 +185,15 @@ def evaluate_global_results():
             'levels': []
         }
         
-        # 加载全局最优轨迹
-        vertices, masses, edges, gt_indices = load_global_trajectory(dir_name)
+        # Load global best trajectory
+        vertices, masses, edges, gt_indices = \
+            load_global_trajectory(os.path.join(prediction_dir, case_name))
         
         if vertices is None:
             print(f"Skipping {case_name} due to missing trajectory data")
             continue
         
-        # vertices 是一个列表，包含所有 level 的轨迹
+        # vertices is a list containing the trajectories of all levels
         num_levels = len(vertices)
         print(f"Global best trajectory has {num_levels} levels")
         
@@ -203,7 +203,7 @@ def evaluate_global_results():
             
             level_vertices = vertices[level_idx]
             
-            # 评估训练集
+            # Evaluate training set
             results_train = evaluate_prediction(
                 1,
                 train_frame,
@@ -215,7 +215,7 @@ def evaluate_global_results():
                 num_surface_points,
             )
             
-            # 评估测试集
+            # Evaluate test set
             results_test = evaluate_prediction(
                 train_frame,
                 test_frame,
@@ -241,7 +241,7 @@ def evaluate_global_results():
             print(f"    Train Chamfer Error: {results_train['chamfer_error']:.6f} ({results_train['frame_len']} frames)")
             print(f"    Test Chamfer Error: {results_test['chamfer_error']:.6f} ({results_test['frame_len']} frames)")
         
-        # 计算所有 level 的平均误差
+        # Compute the average error over all levels
         avg_train_error = np.mean([r['train_chamfer_error'] for r in level_results])
         avg_test_error = np.mean([r['test_chamfer_error'] for r in level_results])
         
@@ -262,15 +262,15 @@ def evaluate_global_results():
 
 def write_results_to_csv(results):
     """
-    将全局最优结果写入 CSV 文件
-    每个 level 单独列出一行
+    Write global best results to a CSV file
+    List each level on a separate row
     """
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
     with open(output_file, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         
-        # 写入表头
+        # Write header
         header = [
             "Case Name",
             "Level",
@@ -282,7 +282,7 @@ def write_results_to_csv(results):
         ]
         writer.writerow(header)
         
-        # 写入数据 - 每个 level 单独一行
+        # Write data - one row per level
         for case_result in results:
             case_name = case_result['case_name']
             for level_result in case_result['levels']:
@@ -297,7 +297,7 @@ def write_results_to_csv(results):
                 ]
                 writer.writerow(row)
             
-            # 添加每个 case 内部所有 level 的平均行
+            # Add an average row over all levels within each case
             avg_row = [
                 case_name,
                 'AVG',
@@ -309,13 +309,13 @@ def write_results_to_csv(results):
             ]
             writer.writerow(avg_row)
         
-        # 添加一个空行分隔
+        # Add a blank line as separator
         writer.writerow([])
         
-        # 计算每一层所有 case 的平均值
+        # Compute the average over all cases for each layer
         writer.writerow(["Layer-wise Average across all cases"])
         
-        # 找到最大的 level 数量
+        # Find the maximum number of levels
         max_levels = max(len(case_result['levels']) for case_result in results)
         
         for level_idx in range(max_levels):
@@ -372,7 +372,7 @@ def visualize_global_trajectory(case_name, vertices, gt_object_points, gt_visibi
     print(f"Starting global best trajectory visualization for {case_name}...")
     print(f"Number of levels: {len(vertices)}")
     
-    # 过滤掉含有 nan 的 level，只保留正常的 level 进行可视化
+    # Filter out levels containing NaN and keep only valid levels for visualization
     valid_vertices = []
     valid_level_indices = []
     for level_idx, level_vertices in enumerate(vertices):
@@ -387,7 +387,7 @@ def visualize_global_trajectory(case_name, vertices, gt_object_points, gt_visibi
             valid_vertices.append(level_vertices)
             valid_level_indices.append(level_idx)
     
-    # 使用过滤后的 vertices
+    # Use the filtered vertices
     vertices = valid_vertices
     num_levels = len(vertices)
     
@@ -514,9 +514,8 @@ if __name__ == "__main__":
     
     # # Visualize global best trajectories for each case
     # print("\nGenerating trajectory visualizations...")
-    # dir_names = glob.glob(f"{prediction_dir}/*")
-    # for dir_name in dir_names:
-    #     case_name = dir_name.split("/")[-1]
+    # dir_names = os.listdir(prediction_dir)
+    # for case_name in dir_names:
     #     print(f"\nVisualizing {case_name}...")
         
     #     # Load GT data

@@ -3,10 +3,10 @@ import numpy as np
 from qqtt.utils import logger, cfg
 import warp as wp
 
-# Warp 1.14+ 使用 Logger 协议代替了旧的 warn 函数
-# 通过自定义 Logger 屏蔽 "Running the tape backwards" 警告
+# Warp 1.14+ uses the Logger protocol instead of the old warn function
+# Suppress the "Running the tape backwards" warning via a custom Logger
 class _SuppressTapeWarningsLogger:
-    """包装默认 Logger，静默丢弃 tape backwards 警告。"""
+    """Wrap the default Logger and silently drop tape backwards warnings."""
 
     def __init__(self):
         self._default = wp._src.utils.LoggerBasic()
@@ -48,7 +48,7 @@ class State:
         )
         self.wp_control_v = wp.zeros_like(self.wp_control_x, requires_grad=False)
 
-        # --- 新增：用于在 Kernel 中记录碰撞信息的 Buffer ---
+        # --- Added: buffers for recording collision info inside the Kernel ---
         # num_object_points = wp_init_vertices.shape[0]
         # self.wp_hit_count = wp.zeros(num_object_points, dtype=wp.int32, requires_grad=False)
         # self.wp_hit_indices = wp.zeros((num_object_points, 100), dtype=wp.int32, requires_grad=False)
@@ -57,7 +57,7 @@ class State:
     def clear_forces(self):
         self.wp_vertice_forces.zero_()
         # self.wp_hit_count.zero_()
-        # # --- 加上下面这两行，每次都把显存洗干净 ---
+        # # --- Add the following two lines to clear the GPU memory every time ---
         # self.wp_hit_indices.zero_()
         # self.wp_hit_impulses.zero_()
 
@@ -197,11 +197,11 @@ def loop(
     collision_dist: float,
     clamp_collide_object_elas: float,
     clamp_collide_object_fric: float,
-    # # --- 新增参数 ---
+    # # --- Added parameters ---
     # hit_count: wp.array(dtype=wp.int32),
     # hit_indices: wp.array2d(dtype=wp.int32),
     # hit_impulses: wp.array2d(dtype=wp.vec3),
-    sort_buffer: wp.array2d(dtype=wp.vec3), # 传入草稿纸
+    sort_buffer: wp.array2d(dtype=wp.vec3), # pass in the scratch buffer
 ):
     x1 = x[i]
     v1 = v[i]
@@ -223,7 +223,7 @@ def loop(
         dis_len = wp.length(dis)
         relative_v = v2 - v1
         # If the distance is less than the collision distance and the two points are moving towards each other
-        # 碰撞条件保持不变
+        # The collision condition remains unchanged
         if (
             mask1 != mask2
             and dis_len < collision_dist
@@ -233,10 +233,10 @@ def loop(
             mass_inv_sum = 1.0 / m1 + 1.0 / m2
 
             # ==========================================
-            # 修复 1：几何奇点 (完全重叠导致法线随机化)
+            # Fix 1: geometric singularity (complete overlap causes a randomized normal)
             # ==========================================
             if dis_len < 1e-6:
-                # 如果极度穿模，强制赋予一个 Z 轴向上的排斥法线，防止 NaN 或随机弹飞
+                # If deeply penetrating, force an upward Z-axis repulsion normal to prevent NaN or random flying off
                 collision_normal = wp.vec3(0.0, 0.0, 1.0)
             else:
                 collision_normal = dis / dis_len
@@ -244,29 +244,29 @@ def loop(
             v_rel_n = wp.dot(relative_v, collision_normal) * collision_normal
             v_rel_n_length = wp.length(v_rel_n)
             
-            # 法向冲量 (Normal Impulse)
+            # Normal impulse
             impulse_n = (-(1.0 + clamp_collide_object_elas) * v_rel_n) / mass_inv_sum
 
             # ==========================================
-            # 修复 2：摩擦力奇点 (切向速度极小导致除零溢出)
+            # Fix 2: friction singularity (extremely small tangential velocity causes divide-by-zero overflow)
             # ==========================================
             v_rel_t = relative_v - v_rel_n
             v_rel_t_length = wp.length(v_rel_t)
 
             if v_rel_t_length < 1e-6:
-                # 几乎没有切向滑动，处于静摩擦状态，直接施加反向冲量抵消全部切向速度
+                # Almost no tangential sliding, in static friction; directly apply a reverse impulse to cancel all tangential velocity
                 impulse_t = -v_rel_t / mass_inv_sum
             else:
                 
-                # 动摩擦状态：安全计算摩擦力圆锥截断 (Friction Cone Clamping)
+                # Kinetic friction state: safely compute friction cone clamping
                 friction_limit = clamp_collide_object_fric * (1.0 + clamp_collide_object_elas) * v_rel_n_length
-                # ratio 代表我们需要抵消多少比例的切向速度，最大为 1.0 (完全停止滑动)
+                # ratio is the fraction of tangential velocity to cancel, at most 1.0 (fully stop sliding)
                 ratio = wp.min(friction_limit / v_rel_t_length, 1.0)
                 impulse_t = -ratio * v_rel_t / mass_inv_sum
 
             J = impulse_n + impulse_t
 
-            # # --- 新增：在这里直接将真实的碰撞 ID 和冲量写入显存 ---
+            # # --- Added: directly write the real collision IDs and impulses to GPU memory here ---
             # # current_hits = hit_count[i]
             # if idx < 100:  
             #     hit_indices[i, idx] = index
@@ -276,7 +276,7 @@ def loop(
             sort_buffer[i, current_hits] = J
             current_hits += 1
 
-    # 2. 对草稿纸中的冲量进行插入排序 (按模长平方从小到大)
+    # 2. Insertion-sort the impulses in the scratch buffer (by squared magnitude, ascending)
     for step in range(1, current_hits):
         key_J = sort_buffer[i, step]
         key_mag = wp.length_sq(key_J)
@@ -288,7 +288,7 @@ def loop(
         
         sort_buffer[i, j + 1] = key_J
 
-    # 3. 排序完成后，从最小的力开始累加，极大降低浮点数精度截断造成的误差
+    # 3. After sorting, accumulate starting from the smallest force, greatly reducing error from floating-point truncation
     J_sum = wp.vec3(0.0, 0.0, 0.0)
     for k in range(current_hits):
         J_sum += sort_buffer[i, k]
@@ -339,11 +339,11 @@ def object_collision(
     collision_dist: float,
     collision_indices: wp.array2d(dtype=wp.int32),
     collision_number: wp.array(dtype=wp.int32),
-    # # --- 新增参数 ---
+    # # --- Added parameters ---
     # hit_count: wp.array(dtype=wp.int32),
     # hit_indices: wp.array2d(dtype=wp.int32),
     # hit_impulses: wp.array2d(dtype=wp.vec3),
-    sort_buffer: wp.array2d(dtype=wp.vec3), # <--- 接收草稿纸
+    sort_buffer: wp.array2d(dtype=wp.vec3), # <--- receive the scratch buffer
     # # --------------
     v_new: wp.array(dtype=wp.vec3),
 ):
@@ -365,10 +365,10 @@ def object_collision(
         collision_dist,
         clamp_collide_object_elas,
         clamp_collide_object_fric,
-        # hit_count,     # 传入
-        # hit_indices,   # 传入
-        # hit_impulses,  # 传入
-        sort_buffer, # <--- 传给 loop
+        # hit_count,     # passed in
+        # hit_indices,   # passed in
+        # hit_impulses,  # passed in
+        sort_buffer, # <--- passed to loop
     )
 
     if valid_count > 0:
@@ -674,7 +674,7 @@ class SpringMassSystemWarp:
         gt_object_points=None,
         gt_object_visibilities=None,
         gt_object_motions_valid=None,
-        # 新增：未下采样的真值，用于 chamfer loss 计算
+        # Added: un-downsampled ground truth for chamfer loss computation
         gt_object_points_full=None,
         gt_object_visibilities_full=None,
         self_collision=False,
@@ -763,7 +763,7 @@ class SpringMassSystemWarp:
             )
 
         # Initialize the GT for calculating losses
-        # 下采样后的真值用于 track loss
+        # Downsampled ground truth for track loss
         self.gt_object_points = gt_object_points
         if cfg.data_type == "real":
             self.gt_object_visibilities = gt_object_visibilities.int()
@@ -772,7 +772,7 @@ class SpringMassSystemWarp:
         self.num_surface_points = num_surface_points
         self.num_original_points = num_original_points
 
-        # 未下采样的真值用于 chamfer loss（如果提供了的话）
+        # Un-downsampled ground truth for chamfer loss (if provided)
         self.gt_object_points_full = gt_object_points_full
         self.use_full_gt_for_chamfer = (gt_object_points_full is not None)
         if cfg.data_type == "real" and self.use_full_gt_for_chamfer:
@@ -817,7 +817,7 @@ class SpringMassSystemWarp:
             self.num_valid_visibilities = int(self.gt_object_visibilities[1].sum())
             self.num_valid_motions = int(self.gt_object_motions_valid[0].sum())
             
-            # 如果提供了 full GT，也初始化对应的 buffer
+            # If full GT is provided, initialize the corresponding buffers as well
             if self.use_full_gt_for_chamfer:
                 self.wp_current_object_points_full = wp.from_torch(
                     self.gt_object_points_full[1].clone(), dtype=wp.vec3, requires_grad=False
@@ -847,14 +847,14 @@ class SpringMassSystemWarp:
             state = State(self.wp_init_velocities, self.num_control_points)
             self.wp_states.append(state)
         if cfg.data_type == "real":
-            # 用于 track loss 的 distance matrix（下采样后的 GT）
+            # Distance matrix for track loss (downsampled GT)
             self.distance_matrix = wp.zeros(
                 (self.num_original_points, self.num_surface_points), requires_grad=False
             )
             self.neigh_indices = wp.zeros(
                 (self.num_original_points), dtype=wp.int32, requires_grad=False
             )
-            # 如果提供了 full GT，也初始化对应的 buffer 用于 chamfer loss
+            # If full GT is provided, also initialize the corresponding buffers for chamfer loss
             if self.use_full_gt_for_chamfer:
                 self.distance_matrix_full = wp.zeros(
                     (self.num_original_points_full, self.num_surface_points), requires_grad=False
@@ -890,7 +890,7 @@ class SpringMassSystemWarp:
             requires_grad=cfg.collision_learn,
         )
 
-        # --- 新增：全局唯一的排序草稿纸，所有 substep 共用这一块显存 ---
+        # --- Added: a single global sort scratch buffer shared by all substeps ---
         self.wp_sort_buffer = wp.zeros(
             (self.wp_init_vertices.shape[0], 500), 
             dtype=wp.vec3, 
@@ -960,7 +960,7 @@ class SpringMassSystemWarp:
                 outputs=[self.wp_current_object_points],
             )
 
-            # 如果提供了 full GT，也更新用于 chamfer loss 的 full GT
+            # If full GT is provided, also update the full GT used for chamfer loss
             if self.use_full_gt_for_chamfer:
                 wp.launch(
                     copy_vec3,
@@ -990,7 +990,7 @@ class SpringMassSystemWarp:
                     self.gt_object_motions_valid[frame_idx - 1].sum()
                 )
                 
-                # 更新 full GT 的 visibility
+                # Update the visibility of the full GT
                 if self.use_full_gt_for_chamfer:
                     wp.launch(
                         copy_int,
@@ -1164,12 +1164,12 @@ class SpringMassSystemWarp:
                         self.collision_dist,
                         self.wp_collision_indices,
                         self.wp_collision_number,
-                        # --- 传入当前状态记录器 ---
+                        # --- Pass in the current state recorder ---
                         # self.wp_states[i].wp_hit_count,
                         # self.wp_states[i].wp_hit_indices,
                         # self.wp_states[i].wp_hit_impulses,
 
-                        self.wp_sort_buffer,  # <--- 修改这里：传入全局复用的草稿纸
+                        self.wp_sort_buffer,  # <--- changed here: pass in the globally reused scratch buffer
                     ],
                     outputs=[self.wp_states[i].wp_v_before_ground],
                 )
@@ -1190,9 +1190,9 @@ class SpringMassSystemWarp:
             )
 
     def calculate_loss(self):
-        # 如果提供了 full GT，则使用 full GT 计算 chamfer loss，否则使用下采样的 GT
+        # If full GT is provided, use it to compute chamfer loss; otherwise use the downsampled GT
         if self.use_full_gt_for_chamfer:
-            # 使用未下采样的真值计算 chamfer loss
+            # Compute chamfer loss using the un-downsampled ground truth
             wp.launch(
                 compute_distances,
                 dim=(self.num_original_points_full, self.num_surface_points),
@@ -1225,7 +1225,7 @@ class SpringMassSystemWarp:
                 outputs=[self.chamfer_loss],
             )
         else:
-            # 使用下采样后的真值计算 chamfer loss
+            # Compute chamfer loss using the downsampled ground truth
             wp.launch(
                 compute_distances,
                 dim=(self.num_original_points, self.num_surface_points),
@@ -1258,7 +1258,7 @@ class SpringMassSystemWarp:
                 outputs=[self.chamfer_loss],
             )
 
-        # Compute the tracking loss - 始终使用下采样后的真值
+        # Compute the tracking loss - always use the downsampled ground truth
         wp.launch(
             compute_track_loss,
             dim=self.num_original_points,
@@ -1309,7 +1309,7 @@ class SpringMassSystemWarp:
         if cfg.data_type == "real":
             self.distance_matrix.zero_()
             self.neigh_indices.zero_()
-            # 如果使用了 full GT，清理对应的 buffer
+            # If full GT is used, clear the corresponding buffers
             if self.use_full_gt_for_chamfer:
                 self.distance_matrix_full.zero_()
                 self.neigh_indices_full.zero_()
@@ -1412,12 +1412,12 @@ class SpringMassSystemWarp:
 
     def export_forces_to_txt(self, frame_idx, filename="particle_exact_collision_log.txt", max_points=100):
         """
-        导出碰撞日志（基于 Kernel 内的精准记录）。
+        Export the collision log (based on the exact records inside the Kernel).
         """
         if not self.object_collision_flag:
             return
 
-        # 确保 GPU 执行完成
+        # Ensure GPU execution has completed
         # wp.synchronize_device(self.device)
         
         masses = self.wp_masses.numpy()
@@ -1434,14 +1434,14 @@ class SpringMassSystemWarp:
                     if first_hit_node is None:
                         first_hit_node = self.wp_states[i].wp_hit_count.numpy().argmax()
                     max_record -= 1
-                    # 直接拉取 Kernel 里记录的精准碰撞数据
+                    # Directly fetch the exact collision data recorded in the Kernel
                     hit_count = self.wp_states[i].wp_hit_count.numpy()
                     hit_indices = self.wp_states[i].wp_hit_indices.numpy()
                     
                     hit_impulses = self.wp_states[i].wp_hit_impulses.numpy()
                     pos = self.wp_states[i].wp_x.numpy()
 
-                    # --- 新增：拉取 wp_v_before_ground 数据 ---
+                    # --- Added: fetch the wp_v_before_ground data ---
                     v_bg = self.wp_states[i].wp_v_before_ground.numpy()
                     
                     substep_logs = []
@@ -1452,8 +1452,8 @@ class SpringMassSystemWarp:
                     p_pos = pos[p]
                     p_mask = masks[p]
                     m1 = masses[p]
-                    p_v_bg = v_bg[p]  # 获取当前粒子的 v_before_ground
-                    # 1. 首先记录当前粒子的基础状态信息
+                    p_v_bg = v_bg[p]  # Get the current particle's v_before_ground
+                    # 1. First record the basic state info of the current particle
                     log_str = (f"    Particle {p:04d} [Mask:{p_mask}] | "
                                 f"Pos: ({p_pos[0]:6.3f}, {p_pos[1]:6.3f}, {p_pos[2]:6.3f}) | "
                                 f"V_before_ground: ({p_v_bg[0]:8.4f}, {p_v_bg[1]:8.4f}, {p_v_bg[2]:8.4f})\n")
@@ -1461,8 +1461,8 @@ class SpringMassSystemWarp:
 
                     for k in range(count):
                         target_id = hit_indices[p, k]
-                        # Kernel 里算的是冲量 J，根据 F = J / (m * dt) 还原出真实的力
-                        # 注意：v_new = v - (J_avg / m), 物理学上冲量作用在当前粒子上的效果是 -J / (m * dt)
+                        # The Kernel computes impulse J; recover the actual force via F = J / (m * dt)
+                        # Note: v_new = v - (J_avg / m); physically the impulse's effect on the current particle is -J / (m * dt)
                         J = hit_impulses[p, k]
                         
 

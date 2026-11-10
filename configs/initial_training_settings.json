@@ -1,0 +1,90 @@
+{
+    "rope_double_hand" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "double_stretch_zebra" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "double_stretch_sloth" : {
+        "lr" : 1e-3,
+        "init_spring_Y" : 3e3
+    },
+    "single_lift_rope" : {
+        "lr" : 1e-3,
+        "init_spring_Y" : 3e3
+    },
+    "single_lift_dinosor" : {
+        "lr" : 3e-3,
+        "init_spring_Y" : 3e3
+    },
+    "weird_package" : {
+        "lr" : 1e-3,
+        "init_spring_Y" : 3e3
+    },
+    "single_lift_cloth" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e4
+    },
+    "double_lift_zebra" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e4
+    },
+    "double_lift_sloth" : {
+        "lr" : 1e-3,
+        "init_spring_Y" : 3e3
+    },
+    "single_lift_sloth" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e4
+    },
+    "single_lift_zebra" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "single_push_rope" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "single_push_sloth" : {
+        "lr" : 1e-3,
+        "init_spring_Y" : 3e3
+    },
+    "single_lift_cloth_1" : {
+        "lr" : 1e-3,
+        "init_spring_Y" : 3e3
+    },
+    "single_lift_cloth_3" : {
+        "lr" : 3e-3,
+        "init_spring_Y" : 3e3
+    },
+    "single_lift_cloth_4" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "single_push_rope_1" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "single_push_rope_4" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "double_lift_cloth_3" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "single_clift_cloth_1" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    },
+    "single_clift_cloth_3" : {
+        "lr" : 1e-3,
+        "init_spring_Y" : 3e3
+    },
+    "double_lift_cloth_1" : {
+        "lr" : 5e-4,
+        "init_spring_Y" : 3e3
+    }
+}

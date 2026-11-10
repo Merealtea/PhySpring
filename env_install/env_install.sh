@@ -3,10 +3,18 @@ conda install -c nvidia cuda=12.8 -y
 conda install -c nvidia cuda-toolkit=12.8 -y 
 conda install -c nvidia cuda-nvcc=12.8 -y 
 
+# set up gcc and g++ path
+export CC=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc
+export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
+export CUDAHOSTCXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
+export CUDA_INCLUDE_DIR="$CONDA_PREFIX/targets/x86_64-linux/include"
+export CPATH="$CUDA_INCLUDE_DIR${CPATH:+:$CPATH}"
+
 # install gcc and g++ version 10
 conda install -c conda-forge gxx_linux-64=10 gcc_linux-64=10 -y 
 
 pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+pip install scikit-learn==1.7.2
 
 pip install numpy==1.26.4
 pip install "scipy<=1.15.3" --no-cache-dir --force-reinstall
@@ -24,7 +32,7 @@ pip install termcolor
 pip install fvcore
 pip install wandb
 pip install moviepy imageio
-conda install -y opencv
+pip install opencv-python==4.14.0.94
 pip install cma
 pip install "git+https://github.com/facebookresearch/pytorch3d.git" --no-build-isolation --no-cache-dir
 
@@ -44,10 +52,6 @@ pip install h5py
 pip install einops
 pip install tensorboard
 
-# set up gcc and g++ path
-export CC=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc
-export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
-export CUDAHOSTCXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
 
 cd src/gaussian_splatting/
 pip install submodules/diff-gaussian-rasterization/ --no-build-isolation

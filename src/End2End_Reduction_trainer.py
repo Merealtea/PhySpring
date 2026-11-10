@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.distributed as dist
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-import models as models
 from End2End_EvoSpring_Reduction import End2EndReduction_EvoSpring
 from End2End_Reduction_Dataset import End2EndReductionDataset
 import math
@@ -14,10 +13,11 @@ from Reducer import FastAdaptiveNetworkReducer, RandomReducer, build_physical_ma
 import warp as wp
 from time import time
 import pickle
+import csv
 import logging
 from datetime import datetime
 
-# 禁用所有 warp 相关的 logger
+# Disable all warp-related loggers
 logging.getLogger("warp").setLevel(logging.ERROR)
 
 
@@ -27,6 +27,11 @@ class E2EReductionTrainer:
         cfg.device = device
 
         self.mdata = self._create_dataset_offline(mode='train')
+        # Per-object initial stiffness from configs/initial_training_settings.json
+        # (applied after the dataset loads its yaml, which would otherwise overwrite it)
+        if getattr(self.args, 'init_spring_Y', None) is not None:
+            cfg.init_spring_Y = self.args.init_spring_Y
+
         self._create_model(cfg.init_spring_Y,
                             cfg.drag_damping,
                             cfg.dashpot_damping,
@@ -35,7 +40,7 @@ class E2EReductionTrainer:
                             cfg.collide_object_elas,
                             cfg.collide_object_fric)
         
-        # 初始化 Warp 优化器（仅在训练模式且 collision_learn 开启时）
+        # Initialize the Warp optimizer (only in training mode with collision_learn enabled)
         # Update without warp, only by NN for multilayer design
         self.optimizer = torch.optim.Adam(self.model.parameters(), 
                                           lr=self.args.lr * min(np.sqrt(cfg.train_frame), 1), 
@@ -44,41 +49,44 @@ class E2EReductionTrainer:
         self.epochs_per_stage = 20 # 20
         self.iter_per_epoch = 10
         
-        # 分阶段训练相关变量
-        self.num_stages = self.args.multi_mesh_layer  # 阶段数等于层数
-        self.current_stage = 0  # 当前训练阶段
+        # Variables related to staged training
+        self.num_stages = self.args.multi_mesh_layer  # number of stages equals the number of layers
+        self.current_stage = 0  # current training stage
         
-        # 根据程序运行时间创建保存文件夹
+        # Create the save folder based on the program run time
         self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.save_base_dir = os.path.join(self.args.dump_dir, self.run_timestamp)
         os.makedirs(self.save_base_dir, exist_ok=True)
         logger.info(f"Results will be saved to: {self.save_base_dir}")
         
-        # 在时间戳文件夹下创建所有需要的子目录
+        # Create all required subdirectories under the timestamp folder
         for subdir in ['ckpts', 'log', 'test_RMSE', 'spring_mech_info', 'trajectories', 'exported_meshes', 'visualization']:
             dir = os.path.join(self.save_base_dir, subdir)
             os.makedirs(dir, exist_ok=True)
         
-        # if dist.get_rank() == 0:
-            # SummaryWriter 保存到时间戳文件夹下的 log 目录
         self.writer = SummaryWriter(os.path.join(self.save_base_dir, 'log'))
+
+        # Per-stage (per-layer) training timing, written to CSV after every stage
+        self.stage_time_csv_path = os.path.join(self.save_base_dir, 'stage_training_times.csv')
+        self.stage_timing_records = []
+        self._init_stage_timing_csv()
 
         self.total_update = 0
         
-        # 每个阶段独立跟踪最佳结果
-        self.stage_best_losses = []  # 每个阶段的最佳 loss 列表
-        self.stage_best_mech_info = []  # 每个阶段的最佳 mech_info 列表
-        self.stage_best_epochs = []  # 每个阶段的最佳 epoch
-        self.stage_best_iterations = []  # 每个阶段的最佳 iteration
+        # Track the best results independently for each stage
+        self.stage_best_losses = []  # list of the best loss for each stage
+        self.stage_best_mech_info = []  # list of the best mech_info for each stage
+        self.stage_best_epochs = []  # best epoch for each stage
+        self.stage_best_iterations = []  # best iteration for each stage
         
-        # 初始化阶段最佳结果
+        # Initialize the per-stage best results
         for _ in range(self.num_stages):
             self.stage_best_losses.append(float('inf'))
             self.stage_best_mech_info.append(None)
             self.stage_best_epochs.append(None)
             self.stage_best_iterations.append(None)
         
-        # 全局最佳结果（用于下采样时参考）
+        # Global best results (used as reference during downsampling)
         self.global_best_loss = float('inf')
         self.global_best_mech_info = []
         self.global_best_epoch = None
@@ -124,16 +132,16 @@ class E2EReductionTrainer:
                                                     gt_object_visibilities, 
                                                     gt_object_motions_valid)
 
-        # 初始化 Warp 优化器（仅在训练模式且 collision_learn 开启时）
+        # Initialize the Warp optimizer (only in training mode with collision_learn enabled)
         if cfg.collision_learn:
-            # 确保 requires_grad=True
-            # 碰撞参数 (Collision Parameters)
+            # Ensure requires_grad=True
+            # Collision parameters
             torch_collide_elas = wp.to_torch(simulator.wp_collide_elas)
             torch_collide_fric = wp.to_torch(simulator.wp_collide_fric)
             torch_collide_object_elas = wp.to_torch(simulator.wp_collide_object_elas)
             torch_collide_object_fric = wp.to_torch(simulator.wp_collide_object_fric)
 
-            # 将所有可微分参数添加到列表
+            # Add all differentiable parameters to the list
             warp_params_list = [
                 torch_collide_elas,
                 torch_collide_fric,
@@ -150,7 +158,7 @@ class E2EReductionTrainer:
         self.mlvl_collide_optimizer.append(collide_optimizer)
 
     def downsample(self, stage_idx):
-        # 1. 启发式阈值设定：阶段越往后，允许合并的差异度越大
+        # 1. Heuristic threshold setting: the later the stage, the larger the allowed difference for merging
 
         logger.info(f"Applying adaptive downsampling for Stage {stage_idx}...")
         
@@ -159,7 +167,7 @@ class E2EReductionTrainer:
 
         gs = gs[:, :len(gs[0])//2]
 
-        # 获取全局最优的力学参数
+        # Get the globally optimal mechanical parameters
         best_mech = self.stage_best_mech_info[stage_idx]
         spring_Y = np.exp(best_mech['log_spring_Y'].cpu().numpy())
         drag_damping = best_mech['drag_damping'].item()
@@ -167,31 +175,31 @@ class E2EReductionTrainer:
 
         node_type = self.m_node_type[-1].cpu().numpy()
 
-        # 2. 调用自适应降维器进行聚类
-        # reducer 内部会将物理参数转换为 M, D, L 矩阵并进行格拉姆矩阵聚类
+        # 2. Call the adaptive reducer to perform clustering
+        # Internally, the reducer converts physical parameters into M, D, L matrices and performs Gram matrix clustering
         P_np = self.reducer.reduce(
             node_mass, gs, spring_Y, dashpot_damping, drag_damping, node_type
         )
 
-        # 保存投影矩阵 P，供神经网络 Forward 过程聚合特征使用
+        # Save the projection matrix P for feature aggregation during the neural network forward pass
         P_tensor = torch.tensor(P_np, device=cfg.device).float()
         self.m_proj.append(P_tensor)
       
     def export_multi_level_obj(self, save_dir="exported_meshes"):
         """
-        将每一层降维后的图结构（顶点和边）导出为标准的 .obj 文件。
-        顶点坐标直接保留代表节点的原始物理坐标（不进行质心平均）。
+        Export the reduced graph structure (vertices and edges) of each layer as a standard .obj file.
+        Vertex coordinates directly keep the original physical coordinates of the representative nodes (no centroid averaging).
         
-        修改说明：导出到时间戳文件夹下的 exported_meshes 目录
+        Change note: export to the exported_meshes directory under the timestamp folder
         """
         logger.info(f"Exporting multi-level topology to {save_dir}...")
         
-        # 创建导出目录 - 保存到时间戳文件夹下
+        # Create the export directory - saved under the timestamp folder
         export_path = os.path.join(self.save_base_dir, save_dir)
         os.makedirs(export_path, exist_ok=True)
         
         # ==========================================
-        # 1. 准备全局原始坐标
+        # 1. Prepare the global original coordinates
         # ==========================================
         if isinstance(self.mdata.init_vertices, torch.Tensor):
             global_vertices = self.mdata.init_vertices.detach().cpu().numpy()
@@ -199,7 +207,7 @@ class E2EReductionTrainer:
             global_vertices = self.mdata.init_vertices
             
         # ==========================================
-        # 2. 导出第 0 层 (原始高分辨率结构)
+        # 2. Export layer 0 (original high-resolution structure)
         # ==========================================
         current_edges = self.m_gs[0].detach().cpu().numpy()  # [2, num_edges]
         
@@ -210,23 +218,18 @@ class E2EReductionTrainer:
         )
         
         # ==========================================
-        # 3. 逐层提取代表节点并导出
+        # 3. Extract representative nodes layer by layer and export them
         # ==========================================
-        # self.m_ids 中存储了每一层的节点在全局图中的原始索引
-        # 注意：m_ids[0] 可能是全集，m_ids[1] 是第一次降采样的结果
+        # self.m_ids stores the original indices of each layer's nodes in the global graph
+        # Note: m_ids[0] may be the full set; m_ids[1] is the result of the first downsampling
         
         for layer_idx in range(1, len(self.m_ids)):
-            # 获取当前层保留的全局节点索引 (例如: [3, 5, 9, 12, ...])
+            # Get the global node indices kept in the current layer (e.g. [3, 5, 9, 12, ...])
             current_node_ids = self.m_ids[layer_idx]
-            
-            # 【核心修改】：直接从全局坐标中，抽出这些保留节点的位置
-            # 因为 new_ids 记录的就是被选为代表的那个原始节点的 ID
             current_points = global_vertices[current_node_ids]
-            
-            # 获取当前层的边拓扑关系 (这些边使用的是 0 到 N_new-1 的局部索引)
             current_edges = self.m_gs[layer_idx].detach().cpu().numpy()
 
-            # 导出当前层
+            # Export the current layer
             filename = os.path.join(export_path, f"layer_{layer_idx}_nodes_{current_points.shape[0]}.obj")
             self._write_obj(filename, current_points, current_edges)
             
@@ -234,25 +237,25 @@ class E2EReductionTrainer:
 
     def _write_obj(self, filename, vertices, edges):
         """
-        内部辅助函数：将顶点和边写入 OBJ 文件格式
+        Internal helper: write vertices and edges in OBJ file format
         """
         with open(filename, 'w') as f:
             f.write(f"# Auto-generated hierarchical point cloud\n")
             f.write(f"# Vertices: {vertices.shape[0]}, Edges: {edges.shape[1]}\n\n")
             
-            # 1. 写入顶点 (Vertices)
+            # 1. Write vertices
             for v in vertices:
                 f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
                 
             f.write("\n")
             
-            # 2. 写入边/线段 (Lines)
+            # 2. Write edges/line segments (Lines)
             if edges.shape[1] > 0:
                 edges_sorted = np.sort(edges, axis=0)
                 edges_unique = np.unique(edges_sorted, axis=1)
                 
                 for col in range(edges_unique.shape[1]):
-                    # OBJ 的索引从 1 开始
+                    # OBJ indices start at 1
                     u = edges_unique[0, col] + 1  
                     v = edges_unique[1, col] + 1
                     f.write(f"l {u} {v}\n")
@@ -340,23 +343,23 @@ class E2EReductionTrainer:
         mlvl_masses=None, mlvl_edges=None
     ):
         """
-        保存轨迹数据，可选保存真值下采样索引（用于多阶段评估）
+        Save trajectory data, optionally saving ground-truth downsampling indices (for multi-stage evaluation)
         
         Args:
-            mlvl_mech_info: 力学参数列表
-            save_path: 保存路径
-            compute_loss: 是否计算 loss
-            gt_indices: 真值下采样索引列表（每个阶段对应一个索引列表）
-            stage_idx: 当前阶段索引（用于从 gt_indices 中提取对应阶段的索引）
-            mlvl_masses: 每个 level 的质点质量列表（可选）
-            mlvl_edges: 每个 level 的连接关系/边拓扑列表（可选）
+            mlvl_mech_info: list of mechanical parameters
+            save_path: save path
+            compute_loss: whether to compute loss
+            gt_indices: list of ground-truth downsampling indices (one index list per stage)
+            stage_idx: current stage index (used to extract the corresponding stage's indices from gt_indices)
+            mlvl_masses: list of particle masses for each level (optional)
+            mlvl_edges: list of connectivity/edge topology for each level (optional)
         """
         # ====================================================================
-        # [核心修改]: 保存所有 level 的轨迹结果
+        # [Core change]: save trajectory results for all levels
         # ====================================================================
         logger.info("Initializing all level simulators for trajectory rollout...")
         
-        # 保存所有 level 的结果
+        # Save results for all levels
         all_level_vertices = []
         all_level_velocities = []
         
@@ -364,7 +367,7 @@ class E2EReductionTrainer:
             logger.info(f"Processing Level {level_idx}...")
             
             # ====================================================================
-            # 2. 将预测的力学参数 (mech_info) 赋予模拟器
+            # 2. Assign the predicted mechanical parameters (mech_info) to the simulator
             # ====================================================================
             if mlvl_mech_info is not None and len(mlvl_mech_info) > level_idx:
                 logger.info(f"Setting predicted mechanical properties to simulator (Level {level_idx})")
@@ -404,7 +407,7 @@ class E2EReductionTrainer:
                 logger.warning(f"No mech_info available for level {level_idx}")
 
             # ====================================================================
-            # 3. 运行前向仿真，记录轨迹
+            # 3. Run the forward simulation and record trajectories
             # ====================================================================
             frame_len = cfg.train_frame + cfg.test_frame
             simulator.set_init_state(
@@ -453,17 +456,17 @@ class E2EReductionTrainer:
             all_level_velocities.append(velocities.cpu().numpy())
         
         # ====================================================================
-        # 4. 打包并保存结果 (.pkl)
+        # 4. Package and save the results (.pkl)
         # ====================================================================
         logger.info(f"Save the trajectory to {save_path}")
 
-        # 构建 save_data，包含所有 level 的轨迹和物理属性
+        # Build save_data, containing trajectories and physical attributes for all levels
         save_data = {
-            'vertices': all_level_vertices,       # 所有 level 的轨迹列表
-            'velocities': all_level_velocities,   # 所有 level 的速度列表
+            'vertices': all_level_vertices,       # trajectory list for all levels
+            'velocities': all_level_velocities,   # velocity list for all levels
         }
         
-        # 保存每个 level 的节点类型信息
+        # Save node type information for each level
         save_data['node_types'] = []
         for level_idx in range(len(self.mlvl_simulators)):
             if hasattr(self, 'm_node_type') and level_idx < len(self.m_node_type):
@@ -473,12 +476,12 @@ class E2EReductionTrainer:
                 else:
                     save_data['node_types'].append(level_node_type)
             else:
-                # 如果没有 node_type 信息，使用默认值（全为 0）
+                # If there is no node_type information, use the default value (all 0)
                 num_nodes = all_level_vertices[level_idx].shape[1]
                 save_data['node_types'].append(np.zeros(num_nodes, dtype=np.int32))
         logger.info(f"Saved node_types for {len(save_data['node_types'])} levels")
         
-        # 保存每个 level 的质点质量信息
+        # Save particle mass information for each level
         if mlvl_masses is not None:
             save_data['masses'] = []
             for level_idx, level_masses in enumerate(mlvl_masses):
@@ -488,7 +491,7 @@ class E2EReductionTrainer:
                     save_data['masses'].append(level_masses)
             logger.info(f"Saved masses for {len(save_data['masses'])} levels")
         
-        # 保存每个 level 的连接关系（边拓扑）
+        # Save connectivity (edge topology) for each level
         
         if mlvl_edges is not None:
             save_data['edges'] = []
@@ -499,7 +502,7 @@ class E2EReductionTrainer:
                     save_data['edges'].append(level_edges)
             logger.info(f"Saved edges for {len(save_data['edges'])} levels")
         
-        # 如果提供了 gt_indices 和 stage_idx，保存对应阶段的真值索引
+        # If gt_indices and stage_idx are provided, save the ground-truth indices for the corresponding stage
         if gt_indices is not None and stage_idx is not None:
             if stage_idx < len(gt_indices):
                 save_data['gt_indices'] = gt_indices[stage_idx]
@@ -507,7 +510,7 @@ class E2EReductionTrainer:
             else:
                 logger.warning(f"stage_idx {stage_idx} out of range for gt_indices (len={len(gt_indices)})")
         
-        # 也保存当前的 stage_idx 以便评估时识别
+        # Also save the current stage_idx for identification during evaluation
         if stage_idx is not None:
             save_data['stage_idx'] = stage_idx
 
@@ -525,7 +528,7 @@ class E2EReductionTrainer:
         m_gs_list = [np.concatenate([mdata.cells, mdata.cells[[1,0]]], axis = 1)]
         self.m_gs = [torch.tensor(g, dtype=torch.long).to(cfg.device) for g in m_gs_list]
 
-        # 投影压缩矩阵
+        # Projection compression matrix
         self.m_proj = []
         self.m_vertices = [torch.tensor(mdata.init_vertices, dtype=torch.float32, device=cfg.device)]
         self.m_masses = [mdata.init_masses]
@@ -537,26 +540,26 @@ class E2EReductionTrainer:
 
 
     def _compute_abs_node_ids(self, stage: int):
-        """计算当前 stage 每个节点在 stage 0（第一层）中的绝对索引。
+        """Compute the absolute index in stage 0 (the first layer) for each node of the current stage.
 
-        self.m_ids[l] 存储的是第 l 层节点在第 l-1 层中的索引（相对映射）。
-        要得到绝对索引，需要把从当前 stage 到 stage 0 的所有映射链式组合。
+        self.m_ids[l] stores the indices of layer l nodes within layer l-1 (relative mapping).
+        To obtain absolute indices, all mappings from the current stage to stage 0 must be chained together.
 
-        例如 stage=3 的第 i 个节点:
-            idx = self.m_ids[3][i]           # -> stage 2 中的索引
-            idx = self.m_ids[2][idx]         # -> stage 1 中的索引
-            idx = self.m_ids[1][idx]         # -> stage 0 中的索引
+        For example, the i-th node of stage=3:
+            idx = self.m_ids[3][i]           # -> index in stage 2
+            idx = self.m_ids[2][idx]         # -> index in stage 1
+            idx = self.m_ids[1][idx]         # -> index in stage 0
 
         Args:
-            stage: 当前 stage 编号
+            stage: current stage number
 
         Returns:
-            list[int]: 每个节点在 stage 0 中的绝对索引，长度 = 当前 stage 的节点数
+            list[int]: absolute index in stage 0 for each node, length = number of nodes in the current stage
         """
-        # 从当前层的本地索引开始 (0, 1, 2, ..., N-1)
+        # Start from the local indices of the current layer (0, 1, 2, ..., N-1)
         abs_ids = torch.arange(len(self.m_ids[stage]), dtype=torch.long)
 
-        # 逐层向上映射：stage → stage-1 → ... → stage 0
+        # Map upward layer by layer: stage -> stage-1 -> ... -> stage 0
         for l in range(stage, 0, -1):
             mapping = torch.tensor(self.m_ids[l], dtype=torch.long)
             abs_ids = mapping[abs_ids]
@@ -568,7 +571,7 @@ class E2EReductionTrainer:
         vertices_sequence = []
         velocities_sequence = []
 
-        # 存储所有可微分参数的梯度序列
+        # Store gradient sequences for all differentiable parameters
         grad_sequences = {
             'log_spring_Y': [],
             'collision_elas': [],
@@ -579,12 +582,12 @@ class E2EReductionTrainer:
             'dashpot_damping': []
         }
 
-        # [修改] 定义 Warp 端的 Loss 累加器
+        # [Change] Define the Warp-side loss accumulator
         losses = []
         chamfer_losses = []
         track_losses = []
 
-        # 将 cfg.device 更新为 Warp 兼容的字符串或直接获取 Warp device 对象
+        # Update cfg.device to a Warp-compatible string or directly obtain a Warp device object
         simulator.set_init_state(
             simulator.wp_init_vertices, 
             simulator.wp_init_velocities
@@ -605,7 +608,7 @@ class E2EReductionTrainer:
             if simulator.object_collision_flag:
                 simulator.update_collision_graph()
 
-            # 计算 Loss
+            # Compute loss
             if cfg.use_graph:
                 wp.capture_launch(simulator.graph)
             else:
@@ -622,25 +625,25 @@ class E2EReductionTrainer:
 
             valid_frames += 1
 
-            # 提取所有可微分参数的梯度
+            # Extract gradients of all differentiable parameters
             grad_dict = {}
 
-            # spring_Y 梯度
+            # spring_Y gradient
             if simulator.wp_spring_Y.grad is not None:
                 grad_dict['log_spring_Y'] = wp.to_torch(simulator.wp_spring_Y.grad).clone()
             else:
                 grad_dict['log_spring_Y'] = torch.zeros_like(wp.to_torch(simulator.wp_spring_Y))
 
-            # 碰撞参数梯度
+            # Collision parameter gradients
             if cfg.collision_learn:
-                # 阻尼参数梯度 (Damping Parameters)
-                # 检查 simulator 是否有 Warp 数组版本的阻尼参数
+                # Damping parameter gradients
+                # Check whether the simulator has Warp array versions of the damping parameters
                 if hasattr(simulator, 'wp_drag_damping') and simulator.wp_drag_damping.grad is not None:
                     grad_dict['drag_damping'] = wp.to_torch(simulator.wp_drag_damping.grad).clone()
                 elif hasattr(simulator, 'wp_drag_damping'):
                     grad_dict['drag_damping'] = torch.zeros_like(wp.to_torch(simulator.wp_drag_damping))
                 else:
-                    # 如果没有 Warp 数组版本，创建标量零梯度
+                    # If there is no Warp array version, create a scalar zero gradient
                     grad_dict['drag_damping'] = torch.zeros(1, dtype=torch.float32, device=cfg.device)
 
                 if hasattr(simulator, 'wp_dashpot_damping') and simulator.wp_dashpot_damping.grad is not None:
@@ -648,11 +651,11 @@ class E2EReductionTrainer:
                 elif hasattr(simulator, 'wp_dashpot_damping'):
                     grad_dict['dashpot_damping'] = torch.zeros_like(wp.to_torch(simulator.wp_dashpot_damping))
                 else:
-                    # 如果没有 Warp 数组版本，创建标量零梯度
+                    # If there is no Warp array version, create a scalar zero gradient
                     grad_dict['dashpot_damping'] = torch.zeros(1, dtype=torch.float32, device=cfg.device)
 
 
-            # 提取 chamfer_loss 和 track_loss (仅对 real 数据)
+            # Extract chamfer_loss and track_loss (only for real data)
             if cfg.data_type == "real":
                 chamfer_loss = wp.to_torch(simulator.chamfer_loss, requires_grad=False)
                 track_loss = wp.to_torch(simulator.track_loss, requires_grad=False)
@@ -662,7 +665,7 @@ class E2EReductionTrainer:
 
             loss = wp.to_torch(simulator.loss, requires_grad=False)
 
-            # 检查梯度是否有 NaN
+            # Check whether gradients contain NaN
             has_nan = False
 
             for param_name, grad in grad_dict.items():
@@ -677,7 +680,7 @@ class E2EReductionTrainer:
             chamfer_losses.append(chamfer_loss.item())
             track_losses.append(track_loss.item())
 
-            # 保存所有梯度
+            # Save all gradients
             for param_name, grad in grad_dict.items():
                 grad_sequences[param_name].append(grad)
     
@@ -695,7 +698,7 @@ class E2EReductionTrainer:
                 simulator.wp_states[-1].wp_v
             )
 
-        # 转换输出张量
+        # Convert the output tensors
         vertices_tensor = torch.stack(vertices_sequence, dim=0)
         velocities_tensor = torch.stack(velocities_sequence, dim=0)
         node_mass = torch.cat([wp.to_torch(simulator.wp_masses).clone(), torch.zeros(simulator.num_control_points, device=vertices_tensor.device)])
@@ -706,7 +709,7 @@ class E2EReductionTrainer:
         drag_damping = simulator.wp_drag_damping
 
         if enable_backward:
-            # 计算所有参数的平均梯度
+            # Compute the average gradient of all parameters
             grad_avg_dict = {}
 
             for param_name, grad_list in grad_sequences.items():
@@ -715,55 +718,83 @@ class E2EReductionTrainer:
                 else:
                     grad_avg_dict[param_name] = torch.sum(torch.stack(grad_list, dim=0), dim=0)
 
-            # 返回平均梯度字典
+            # Return the average gradient dictionary
             return vertices_tensor, velocities_tensor, node_mass, spring_Y, spring_rest_length, spring_dashpot_damping, drag_damping, losses, chamfer_losses, track_losses, grad_avg_dict, valid_frames
         else:
             return vertices_tensor, velocities_tensor, node_mass, spring_Y, spring_rest_length, spring_dashpot_damping, drag_damping, losses, chamfer_losses, track_losses
 
 
     # ====================================================================
-    # Train 函数：分阶段训练
-    # 每个阶段只监督一层的 simulator：
-    # - 第 0 阶段：只监督最上层（未下采样）的输出
-    # - 第 1 阶段：只监督下采样一次后的结果
-    # - 以此类推
-    # 每个阶段训练 epochs_per_stage 轮
-    # 每层的最佳结果独立保存，不受后续阶段影响
+    # Per-stage (per-layer) timing helpers
+    # ====================================================================
+    STAGE_TIMING_FIELDS = [
+        'stage', 'num_nodes', 'num_springs', 'epochs', 'iterations_per_epoch',
+        'start_time', 'end_time', 'duration_sec', 'duration_min',
+        'avg_epoch_sec', 'best_loss', 'best_epoch', 'best_iteration',
+    ]
+
+    def _init_stage_timing_csv(self):
+        """Create the CSV file with a header as soon as the run starts."""
+        with open(self.stage_time_csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=self.STAGE_TIMING_FIELDS)
+            writer.writeheader()
+
+    def _write_stage_timing_csv(self):
+        """(Re)write the full per-stage timing table (called after each stage)."""
+        with open(self.stage_time_csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=self.STAGE_TIMING_FIELDS)
+            writer.writeheader()
+            for record in self.stage_timing_records:
+                writer.writerow(record)
+
+    # ====================================================================
+    # Train function: staged training
+    # Each stage supervises the simulator of only one layer:
+    # - Stage 0: supervise only the output of the top layer (no downsampling)
+    # - Stage 1: supervise only the result after one downsampling
+    # - and so on
+    # Train each stage for epochs_per_stage epochs
+    # The best results of each layer are saved independently and unaffected by later stages
     # ====================================================================
     def train(self):
         # Initialize initial graph structure info before loop
         self._preproc_multi_infos(self.mdata)
         
-        # 创建总体进度条
+        # Create the overall progress bar
         total_epochs = self.num_stages * self.epochs_per_stage
         self.pbar = tqdm(total=total_epochs, unit="epoch")
         
         logger.info(f"Starting multi-stage training with {self.num_stages} stages, {self.epochs_per_stage} epochs per stage")
         
-        # 分阶段训练
+        # Staged training
         for stage in range(self.num_stages):
             # DEBUG(CXY)
             if stage >= 4:
                 break
 
             self.current_stage = stage
+            stage_start_time = time()
+            stage_start_wall = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            epoch_durations = []
             logger.info(f"\n{'='*60}")
             logger.info(f"Starting Stage {stage} (supervising level {stage})")
             logger.info(f"{'='*60}\n")
             
-            # 注意：downsample 是在模型 forward 中通过 pooling 操作实现的
-            # 每个 stage 对应模型输出的一层，不需要手动执行 downsample
-            # 模型 forward 会返回所有层的输出和 pooling_losses
+            # Note: downsampling is performed via pooling operations inside the model forward pass
+            # Each stage corresponds to one layer of model output; no manual downsampling is needed
+            # The model forward pass returns all layer outputs and pooling_losses
 
-            # 训练当前阶段的所有 epoch
+            # Train all epochs of the current stage
             for epoch in range(self.epochs_per_stage):
                 global_epoch = stage * self.epochs_per_stage + epoch
                 logger.info(f"--- Stage {stage}, Epoch {epoch+1}/{self.epochs_per_stage} (Global Epoch {global_epoch+1}/{total_epochs}) ---")
                 
-                # 运行 epoch，只监督当前层
+                # Run an epoch, supervising only the current layer
+                epoch_start_time = time()
                 self.run_epoch(epoch, mode='train', stage=stage)
-                
-                # 保存当前 epoch 的模型参数
+                epoch_durations.append(time() - epoch_start_time)
+
+                # Save the model parameters of the current epoch
                 epoch_checkpoint = {
                     'epoch': epoch,
                     'stage': stage,
@@ -780,13 +811,47 @@ class E2EReductionTrainer:
                 torch.save(epoch_checkpoint, epoch_ckpt_path)
                 logger.info(f"Saved model checkpoint for Stage {stage}, Epoch {epoch} to {epoch_ckpt_path}")
                 
-                # 更新进度条
+                # Update the progress bar
                 self.pbar.update(1)
 
-            # # 保存当前阶段的最佳结果
+            # Record the wall-clock training time of this layer/stage
+            stage_duration = time() - stage_start_time
+            try:
+                num_nodes = int(self.m_vertices[stage].shape[0])
+            except Exception:
+                num_nodes = None
+            try:
+                # m_gs stores each spring in both directions, so half the column count
+                # matches what create_simulator() actually simulates.
+                num_springs = int(self.m_gs[stage].shape[1]) // 2
+            except Exception:
+                num_springs = None
+            record = {
+                'stage': stage,
+                'num_nodes': num_nodes,
+                'num_springs': num_springs,
+                'epochs': len(epoch_durations),
+                'iterations_per_epoch': self.iter_per_epoch,
+                'start_time': stage_start_wall,
+                'end_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'duration_sec': round(stage_duration, 3),
+                'duration_min': round(stage_duration / 60.0, 3),
+                'avg_epoch_sec': round(float(np.mean(epoch_durations)), 3) if epoch_durations else None,
+                'best_loss': self.stage_best_losses[stage],
+                'best_epoch': self.stage_best_epochs[stage],
+                'best_iteration': self.stage_best_iterations[stage],
+            }
+            self.stage_timing_records.append(record)
+            self._write_stage_timing_csv()
+            logger.info(
+                f"Stage {stage} training time: {record['duration_sec']:.2f}s "
+                f"({record['duration_min']:.2f} min); CSV saved to {self.stage_time_csv_path}"
+            )
+
+            # # Save the best result of the current stage
             self._save_stage_result(stage)
 
-            # 合并所有阶段的最佳结果为 global_best
+            # Merge the best results of all stages into global_best
             self._merge_stage_results()
 
             if self.use_reduction_downsample:
@@ -794,7 +859,7 @@ class E2EReductionTrainer:
             
             logger.info(f"Stage {stage} completed. Best loss: {self.stage_best_losses[stage]:.6f}")
         
-        # 所有阶段训练完成后，导出和可视化
+        # After all stages finish training, export and visualize
         try:
             self.export_multi_level_obj()
         except Exception as e:
@@ -805,53 +870,53 @@ class E2EReductionTrainer:
     
     def _create_stage_simulator(self, stage):
         """
-        为当前阶段创建 simulator（累积创建所有层，不清空之前的 simulator）
-        使用逐层下采样的方式获取 GT 数据
+        Create the simulator for the current stage (cumulatively create all layers without clearing previous simulators)
+        Obtain GT data by layer-by-layer downsampling
         """
         logger.info(f"Creating simulator for stage {stage}...")
         
-        # [修复] 不再清空之前的 simulator，而是累积保存所有层的 simulator
-        # 只在 stage 0 时清空，确保每个 stage 的 simulator 都被保留
+        # [Fix] No longer clear previous simulators; instead accumulate simulators for all layers
+        # Clear only at stage 0, ensuring each stage's simulator is retained
         if stage == 0:
             self.mlvl_simulators = []
             self.mlvl_collide_optimizer = []
         else:
-            # 对于 stage > 0，只清空当前 stage 及之后的部分（如果有的话）
-            # 保留之前 stage 的 simulator
+            # For stage > 0, clear only the current stage and later parts (if any)
+            # Keep the simulators of previous stages
             if len(self.mlvl_simulators) > stage:
                 self.mlvl_simulators = self.mlvl_simulators[:stage]
                 self.mlvl_collide_optimizer = self.mlvl_collide_optimizer[:stage]
         
-        # 保存原始的 GT 数据（第 0 层）
+        # Save the original GT data (layer 0)
         original_gt_points = self.mdata.object_points  # [T, N_original, ...]
         original_gt_vis = self.mdata.object_visibilities
         original_gt_valid = self.mdata.object_motions_valid
         
-        # 逐层下采样 GT 数据
-        # 注意：GT 数据只对应 object points (node_type=0)
-        # 所以需要从 current_ids 中筛选出 object points 的索引
+        # Downsample GT data layer by layer
+        # Note: GT data corresponds only to object points (node_type=0)
+        # Therefore, the indices of object points must be filtered out from current_ids
         gt_object_points_list = [original_gt_points]
         gt_object_visibilities_list = [original_gt_vis]
         gt_object_motions_valid_list = [original_gt_valid]
         
-        # 根据 down_ids 逐层下采样 GT 数据
+        # Downsample GT data layer by layer according to down_ids
         for lvl in range(1, stage + 1):
-            # down_ids[lvl] 存储的是当前层节点在上一层的索引
+            # down_ids[lvl] stores the indices of the current layer's nodes within the previous layer
             prev_gt_points = gt_object_points_list[-1]
             prev_gt_vis = gt_object_visibilities_list[-1]
             prev_gt_valid = gt_object_motions_valid_list[-1]
             
-            # 获取当前层的 node_type，筛选出 object points (node_type=0)
+            # Get the current layer's node_type and filter out object points (node_type=0)
             current_node_type = self.m_node_type[lvl]
             object_mask = (current_node_type == 0)
             object_indices = torch.where(object_mask)[0]
             
-            # 从 current_ids 中只提取 object points 对应的索引
-            # current_ids 是 list，需要转换为 tensor 才能进行索引
+            # Extract only the indices corresponding to object points from current_ids
+            # current_ids is a list and must be converted to a tensor for indexing
             current_ids = torch.tensor(self.m_ids[lvl], dtype=torch.long, device=cfg.device)
             object_ids = current_ids[object_indices]
             
-            # 从上一层的 GT 数据中提取当前层的 GT 数据（只针对 object points）
+            # Extract the current layer's GT data from the previous layer's GT data (only for object points)
             current_gt_points = prev_gt_points[:, object_ids]
             current_gt_vis = prev_gt_vis[:, object_ids]
             current_gt_valid = prev_gt_valid[:, object_ids]
@@ -861,13 +926,13 @@ class E2EReductionTrainer:
             gt_object_motions_valid_list.append(current_gt_valid)
             logger.info(f"Downsampled GT data for level {lvl}: {prev_gt_points.shape} -> {current_gt_points.shape}")
         
-        # [关键修改] 将逐层下采样的 GT 数据保存回实例变量列表
-        # 这样在 run_epoch 中保存最佳结果时可以正确获取下采样后的 GT 数据
+        # [Key change] Save the layer-by-layer downsampled GT data back to the instance variable lists
+        # This way, run_epoch can correctly obtain the downsampled GT data when saving the best results
         self.m_gt_object_points = gt_object_points_list
         self.m_gt_object_visibilities = gt_object_visibilities_list
         self.m_gt_object_motions_valid = gt_object_motions_valid_list
         
-        # 使用当前阶段的顶点、质量等参数
+        # Use the current stage's vertices, masses, and other parameters
         vertice = self.m_vertices[stage]
         masses = self.m_masses[stage]
         
@@ -880,7 +945,7 @@ class E2EReductionTrainer:
         rest_lengths = torch.norm((vertice[spring_graph[:, 0]]
                                    -vertice[spring_graph[:, 1]]), dim=1)
         
-        # 使用逐层下采样的 GT 数据
+        # Use the layer-by-layer downsampled GT data
         gt_object_points = gt_object_points_list[stage]
         gt_object_visibilities = gt_object_visibilities_list[stage]
         gt_object_motions_valid = gt_object_motions_valid_list[stage]
@@ -919,23 +984,23 @@ class E2EReductionTrainer:
     
     def _save_stage_result(self, stage):
         """
-        保存当前阶段的最佳结果
-        保留之前阶段的设计，累积保存所有阶段的最佳结果
-        现在每个阶段包含完整的下采样信息
+        Save the best result of the current stage
+        Keep the design of previous stages and cumulatively save the best results of all stages
+        Each stage now contains complete downsampling information
         
-        修改说明：
-        1. 结果保存到按时间戳创建的 save 文件夹下
-        2. 每个 stage 保存时，累积保存从 stage 0 到当前 stage 的所有结果
-        3. 调用 _save_accumulated_results 保存累积的所有阶段结果
+        Change notes:
+        1. Results are saved in the save folder created with a timestamp
+        2. When saving each stage, cumulatively save all results from stage 0 to the current stage
+        3. Call _save_accumulated_results to save the accumulated results of all stages
         """
         if self.stage_best_mech_info[stage] is None:
             logger.warning(f"No best mech info for stage {stage}, skipping save")
             return
         
-        # 保存当前阶段的最佳 mech_info（已包含完整信息）
+        # Save the best mech_info of the current stage (already contains complete information)
         stage_mech_info = self.stage_best_mech_info[stage]
         
-        # 累积之前阶段的设计（如果存在）
+        # Accumulate the design of previous stages (if any)
         accumulated_mech_info = []
         for prev_stage in range(stage + 1):
             if self.stage_best_mech_info[prev_stage] is not None:
@@ -943,32 +1008,32 @@ class E2EReductionTrainer:
             else:
                 logger.warning(f"Stage {prev_stage} has no best mech info, skipping")
         
-        # 使用 stage_epoch_iter 格式保存累积的 mech_info
+        # Save the accumulated mech_info using the stage_epoch_iter format
         best_epoch = self.stage_best_epochs[stage]
         best_iter = self.stage_best_iterations[stage]
         
-        # 保存到时间戳文件夹下
+        # Save under the timestamp folder
         best_mech_filename = f'stage{stage}_epoch{best_epoch}_iter{best_iter}_accumulated_best_mech_info.pth'
         best_mech_info_path = os.path.join(self.save_base_dir, 'spring_mech_info', best_mech_filename)
         
-        # 保存累积的 mech_info，每个 stage 现在包含完整信息：
-        # - log_spring_Y, drag_damping, dashpot_damping (力学参数，杨氏模量以 log 保存)
-        # - collision_elas, collision_fric, collision_object_elas, collision_object_fric (碰撞参数)
-        # - vertices (下采样后的节点位置：object + interior + surface + controller points)
-        # - edges (下采样后的连接关系)
-        # - node_type (下采样后的节点类型)
-        # - masses (下采样后的节点质量)
-        # - gt_vertices, gt_visibility, gt_motions_valid (下采样后的 GT 数据)
-        # - node_ids (节点 ID 映射)
+        # Save the accumulated mech_info; each stage now contains complete information:
+        # - log_spring_Y, drag_damping, dashpot_damping (mechanical parameters; Young's modulus saved as log)
+        # - collision_elas, collision_fric, collision_object_elas, collision_object_fric (collision parameters)
+        # - vertices (downsampled node positions: object + interior + surface + controller points)
+        # - edges (downsampled connectivity)
+        # - node_type (downsampled node types)
+        # - masses (downsampled node masses)
+        # - gt_vertices, gt_visibility, gt_motions_valid (downsampled GT data)
+        # - node_ids (node ID mapping)
         torch.save({'mech': accumulated_mech_info}, best_mech_info_path)
         logger.info(f"Saved accumulated mech info with complete stage data to {best_mech_info_path}")
         
-        # 保存当前阶段的最佳轨迹（使用累积的设计，文件名包含 stage_epoch_iter）
-        # 同时保存累积的所有 stage 的轨迹结果
+        # Save the best trajectory of the current stage (using the accumulated design; filename contains stage_epoch_iter)
+        # Also save the accumulated trajectory results of all stages
         best_traj_filename = f'stage{stage}_epoch{best_epoch}_iter{best_iter}_best_trajectory.pkl'
         best_traj_path = os.path.join(self.save_base_dir, 'trajectories', best_traj_filename)
         
-        # 为 save_traj 提取力学参数部分（save_traj 只需要力学参数用于仿真）
+        # Extract the mechanical parameter part for save_traj (save_traj only needs mechanical parameters for simulation)
         mlvl_mech_info_for_traj = []
         for mech_info in accumulated_mech_info:
             traj_mech = {
@@ -990,7 +1055,7 @@ class E2EReductionTrainer:
                        mlvl_masses=self.m_masses,
                        mlvl_edges=self.m_gs)
         
-        # 调用 _save_accumulated_results 保存累积的所有阶段结果（包含从 stage 0 到当前 stage 的所有轨迹）
+        # Call _save_accumulated_results to save the accumulated results of all stages (including all trajectories from stage 0 to the current stage)
         self._save_accumulated_results(stage, accumulated_mech_info)
         
         logger.info(f"Stage {stage} best result saved with {len(accumulated_mech_info)} levels (stages 0-{stage})")
@@ -999,21 +1064,21 @@ class E2EReductionTrainer:
     
     def _save_accumulated_results(self, current_stage, accumulated_mech_info):
         """
-        保存累积的所有阶段的结果（从 stage 0 到 current_stage）
+        Save the accumulated results of all stages (from stage 0 to current_stage)
         
-        这个函数会在每个阶段结束时被调用，保存当前阶段和之前所有阶段的累积结果
+        This function is called at the end of each stage to save the accumulated results of the current stage and all previous stages
         
         Args:
-            current_stage: 当前阶段索引
-            accumulated_mech_info: 累积的所有阶段力学参数列表
+            current_stage: current stage index
+            accumulated_mech_info: accumulated list of mechanical parameters for all stages
         """
         logger.info(f"Saving accumulated results for stages 0-{current_stage}...")
         
-        # 保存累积的所有 stage 的结果（包含从 stage 0 到当前 stage 的所有轨迹）
+        # Save the accumulated results of all stages (including all trajectories from stage 0 to the current stage)
         accumulated_traj_filename = f'stage{current_stage}_accumulated_all_stages_trajectory.pkl'
         accumulated_traj_path = os.path.join(self.save_base_dir, 'trajectories', accumulated_traj_filename)
         
-        # 为每个已完成的 stage 生成轨迹
+        # Generate trajectories for each completed stage
         all_stages_traj_data = []
         for completed_stage in range(current_stage + 1):
             if self.stage_best_mech_info[completed_stage] is not None:
@@ -1034,7 +1099,7 @@ class E2EReductionTrainer:
                     'iter': self.stage_best_iterations[completed_stage],
                 })
         
-        # 保存累积的所有 stage 的信息
+        # Save the accumulated information of all stages
         accumulated_save_data = {
             'all_stages_traj_data': all_stages_traj_data,
             'accumulated_mech_info': accumulated_mech_info,
@@ -1049,12 +1114,12 @@ class E2EReductionTrainer:
     
     def _merge_stage_results(self):
         """
-        合并所有阶段的最佳结果为 global_best
-        现在每个阶段包含完整的下采样数据
+        Merge the best results of all stages into global_best
+        Each stage now contains complete downsampled data
         
-        修改说明：
-        1. 结果保存到按时间戳创建的 save 文件夹下
-        2. 同时保存一份到原来的 spring_mech_info 目录以便兼容
+        Change notes:
+        1. Results are saved in the save folder created with a timestamp
+        2. Also save a copy to the original spring_mech_info directory for compatibility
         """
         logger.info("Merging stage best results into global best...")
         
@@ -1067,30 +1132,30 @@ class E2EReductionTrainer:
             else:
                 logger.warning(f"  Stage {stage}: no best result available")
         
-        # 保存合并后的全局最佳结果（包含所有阶段的完整信息）
+        # Save the merged global best results (including complete information for all stages)
         if len(self.global_best_mech_info) > 0:
-            # 时间戳文件夹路径
+            # Timestamp folder path
             timestamp_mech_info_path = os.path.join(self.save_base_dir, 'spring_mech_info', 'global_best_mech_info.pth')
             
-            # global_best_mech_info 现在包含每个阶段的完整信息：
-            # 对于每个 stage:
-            #   - log_spring_Y, drag_damping, dashpot_damping (力学参数，杨氏模量以 log 保存)
-            #   - collision_elas, collision_fric, collision_object_elas, collision_object_fric (碰撞参数)
-            #   - vertices (下采样后的节点位置：object + interior + surface + controller points)
-            #   - edges (下采样后的连接关系)
-            #   - node_type (下采样后的节点类型)
-            #   - masses (下采样后的节点质量)
-            #   - gt_vertices, gt_visibility, gt_motions_valid (下采样后的 GT 数据)
-            #   - node_ids (节点 ID 映射)
+            # global_best_mech_info now contains complete information for each stage:
+            # For each stage:
+            #   - log_spring_Y, drag_damping, dashpot_damping (mechanical parameters; Young's modulus saved as log)
+            #   - collision_elas, collision_fric, collision_object_elas, collision_object_fric (collision parameters)
+            #   - vertices (downsampled node positions: object + interior + surface + controller points)
+            #   - edges (downsampled connectivity)
+            #   - node_type (downsampled node types)
+            #   - masses (downsampled node masses)
+            #   - gt_vertices, gt_visibility, gt_motions_valid (downsampled GT data)
+            #   - node_ids (node ID mapping)
             save_data = {'mech': self.global_best_mech_info}
             torch.save(save_data, timestamp_mech_info_path)
             logger.info(f"Saved global_best_mech_info with complete stage data to {timestamp_mech_info_path}")
             
-            # 保存全局最佳轨迹（提取力学参数部分用于仿真）
-            # 时间戳文件夹路径
+            # Save the global best trajectory (extract the mechanical parameter part for simulation)
+            # Timestamp folder path
             timestamp_traj_path = os.path.join(self.save_base_dir, 'trajectories', 'global_best_trajectory.pkl')
             
-            # 为 save_traj 提取力学参数
+            # Extract mechanical parameters for save_traj
             mlvl_mech_info_for_traj = []
             for mech_info in self.global_best_mech_info:
                 traj_mech = {
@@ -1104,7 +1169,7 @@ class E2EReductionTrainer:
                 }
                 mlvl_mech_info_for_traj.append(traj_mech)
             
-            # 保存轨迹到时间戳文件夹
+            # Save the trajectory to the timestamp folder
             self.save_traj(mlvl_mech_info=mlvl_mech_info_for_traj, 
                            save_path=timestamp_traj_path, 
                            compute_loss=False,
@@ -1114,10 +1179,10 @@ class E2EReductionTrainer:
             
             logger.info(f"Global best trajectory saved to {timestamp_traj_path}")
             
-            # 保存一个汇总文件，记录所有 stage 的累积结果
+            # Save a summary file recording the accumulated results of all stages
             all_stages_summary_path = os.path.join(self.save_base_dir, 'trajectories', 'all_stages_summary.pkl')
             
-            # 构建所有 stage 的汇总数据
+            # Build the summary data for all stages
             all_stages_summary = {
                 'timestamp': self.run_timestamp,
                 'num_stages': self.num_stages,
@@ -1150,7 +1215,7 @@ class E2EReductionTrainer:
             
             logger.info(f"Saved all stages summary to {all_stages_summary_path}")
             
-            # 打印每个阶段保存的数据摘要
+            # Print a summary of the data saved for each stage
             for stage, mech_info in enumerate(self.global_best_mech_info):
                 logger.info(f"\n  Stage {stage} saved data summary:")
                 logger.info(f"    - Vertices shape: {mech_info['vertices'].shape}")
@@ -1164,12 +1229,12 @@ class E2EReductionTrainer:
     
     def run_epoch(self, epoch, mode='train', stage=0):
         """
-        运行一个 epoch，只监督指定阶段的层
+        Run one epoch, supervising only the layer of the specified stage
         
         Args:
-            epoch: 当前 epoch 索引
-            mode: 'train' 或 'val'
-            stage: 当前训练阶段（只监督该阶段的层）
+            epoch: current epoch index
+            mode: 'train' or 'val'
+            stage: current training stage (only the layer of this stage is supervised)
         """
         # get node_pos, node_mass, rest_length , drag_damping, dashpot_damping in first frame from mdata
         train_node_pos = self.mdata.init_vertices
@@ -1191,15 +1256,15 @@ class E2EReductionTrainer:
         if mode != 'train':
             self.model.eval()
 
-        # 运行仿真
+        # Run the simulation
         if mode == 'train':
             for i in range(self.iter_per_epoch):
                 self.optimizer.zero_grad()
                 
                 st = time()
 
-                # 1. 执行模型前向传播获取 downsample 结果和力学参数
-                # 从配置中获取 object_radius 参数（用于控制 merge 的距离约束）
+                # 1. Run the model forward pass to obtain downsampling results and mechanical parameters
+                # Get the object_radius parameter from the config (distance constraint controlling merges)
                 object_radius = getattr(cfg, 'object_radius', None)
                 
                 mlvl_s_out, mlvl_drag_damping_out, mlvl_dashpot_damping_out, downsample_results, pooling_losses = self.model(
@@ -1214,14 +1279,14 @@ class E2EReductionTrainer:
                     self.global_best_mech_info
                 )
                 
-                # 在分阶段训练中，只使用当前阶段的 pooling loss
-                # pooling_losses 包含每个 downpooling layer 的 loss，我们只取当前阶段对应的 loss
+                # In staged training, only the pooling loss of the current stage is used
+                # pooling_losses contains the loss of each downpooling layer; we only take the loss corresponding to the current stage
                 if stage < len(pooling_losses):
                     stage_pooling_loss = pooling_losses[stage]
                 else:
                     stage_pooling_loss = torch.tensor(0.0, device=cfg.device)
                 
-                # 2. 使用 downsample 结果更新拓扑结构（只在第一次迭代时）
+                # 2. Update the topology using the downsampling results (only on the first iteration)
                 logger.info(f"Updating topology structure at epoch {epoch}, iter {i+1}")
                 self.m_ids = downsample_results['down_ids'][:stage+1]
                 self.m_proj = downsample_results['down_proj'][:stage] # downsample proj number is level - 1
@@ -1231,20 +1296,20 @@ class E2EReductionTrainer:
                 self.m_gs = downsample_results['down_gs'][:stage+1]
 
                 if epoch == 0 and i==0:
-                    # 重新创建当前阶段的 simulator
+                    # Recreate the simulator for the current stage
                     self._create_stage_simulator(stage)
 
-                # 3. 只处理当前阶段的层
+                # 3. Process only the layer of the current stage
                 level_info = {
                     'log_spring_Y': mlvl_s_out[stage],
                     'drag_damping': mlvl_drag_damping_out[stage],
                     'dashpot_damping': mlvl_dashpot_damping_out[stage],
                 }
                 
-                # [修复] 使用当前 stage 对应的 simulator
+                # [Fix] Use the simulator corresponding to the current stage
                 current_simulator = self.mlvl_simulators[stage]
                 
-                # 设置 simulator 参数并运行仿真
+                # Set simulator parameters and run the simulation
                 log_new_spring_Y = torch.log(level_info['log_spring_Y'])
                 wp_predicted_spring_Y = wp.from_torch(
                     log_new_spring_Y.contiguous(), dtype=wp.float32, requires_grad=True
@@ -1262,7 +1327,7 @@ class E2EReductionTrainer:
                 current_simulator.set_drag_damping(wp_predicted_drag_damping)
                 current_simulator.set_dashpot_damping(wp_predicted_dashpot_damping)
                 
-                # 运行仿真序列
+                # Run the simulation sequence
                 pos, _, _, _, _, _, _, loss_val, chamfer_loss_val, track_loss_val, grad_avg_dict, valid_frames = \
                     self.generate_data_point_sequence(
                         current_simulator,
@@ -1270,13 +1335,13 @@ class E2EReductionTrainer:
                         enable_backward=True,
                     )
 
-                # 获取碰撞参数
+                # Get collision parameters
                 wp_collide_elas = wp.to_torch(current_simulator.wp_collide_elas).clone()
                 wp_collide_fric = wp.to_torch(current_simulator.wp_collide_fric).clone()
                 wp_collide_object_elas = wp.to_torch(current_simulator.wp_collide_object_elas).clone()
                 wp_collide_object_fric = wp.to_torch(current_simulator.wp_collide_object_fric).clone()
                 
-                # 构建当前阶段的 mech_info
+                # Build the mech_info for the current stage
                 current_mech_info = {
                     'log_spring_Y': log_new_spring_Y.detach().clone(),
                     'drag_damping': level_info['drag_damping'].detach().clone(),
@@ -1287,7 +1352,7 @@ class E2EReductionTrainer:
                     'collision_object_fric': wp_collide_object_fric.detach().clone(),
                 }
                 
-                # 计算损失
+                # Compute loss
                 simulation_loss = np.sum(loss_val)
                 pooling_loss_value = stage_pooling_loss.item() * 0.000 
                 total_loss_val = simulation_loss # + pooling_loss_value
@@ -1297,8 +1362,8 @@ class E2EReductionTrainer:
                 
                 self.total_update += 1
 
-                # 打印信息
-                # 获取 spring rest_length 统计信息
+                # Print information
+                # Get spring rest_length statistics
                 spring_rest_lengths = wp.to_torch(current_simulator.wp_rest_lengths, requires_grad=False)
                 rest_length_min = spring_rest_lengths.min().item()
                 rest_length_max = spring_rest_lengths.max().item()
@@ -1327,7 +1392,7 @@ class E2EReductionTrainer:
                 self.writer.add_scalar(f'Stage_{self.current_stage}/Drag_Damping', level_info['drag_damping'].item(), self.total_update)
                 self.writer.add_scalar(f'Stage_{self.current_stage}/Dashpot_Damping', level_info['dashpot_damping'].item(), self.total_update)
  
-                # 反向传播
+                # Backpropagation
                 tensors_to_backward = [log_new_spring_Y, level_info['drag_damping'], level_info['dashpot_damping']]
                 grads_to_backward = [
                     grad_avg_dict['log_spring_Y'],
@@ -1335,7 +1400,7 @@ class E2EReductionTrainer:
                     grad_avg_dict['dashpot_damping'],
                 ]
                 
-                # 添加 pooling loss
+                # Add pooling loss
                 tensors_to_backward.append(stage_pooling_loss)
                 grads_to_backward.append(torch.ones_like(stage_pooling_loss)*0.000)
                 
@@ -1346,44 +1411,44 @@ class E2EReductionTrainer:
 
                 self.optimizer.step()
 
-                # 检查并保存当前阶段的最佳结果
+                # Check and save the best result of the current stage
                 if total_loss_val < self.stage_best_losses[self.current_stage]:
                     prev_best = self.stage_best_losses[self.current_stage]
                     self.stage_best_losses[self.current_stage] = total_loss_val
 
                     num_edge = self.m_gs[self.current_stage].shape[1]
                     
-                    # 构建完整的 stage 信息，包含所有下采样后的数据
+                    # Build the complete stage information, including all downsampled data
                     complete_stage_info = {
-                        # 1. 力学参数 (以log保存弹簧杨氏模量)
+                        # 1. Mechanical parameters (spring Young's modulus saved as log)
                         'log_spring_Y': log_new_spring_Y.detach().clone(),
                         'drag_damping': level_info['drag_damping'].detach().clone(),
                         'dashpot_damping': level_info['dashpot_damping'].detach().clone(),
                         
-                        # 2. 碰撞参数
+                        # 2. Collision parameters
                         'collision_elas': wp_collide_elas.detach().clone(),
                         'collision_fric': wp_collide_fric.detach().clone(),
                         'collision_object_elas': wp_collide_object_elas.detach().clone(),
                         'collision_object_fric': wp_collide_object_fric.detach().clone(),
                         
-                        # 3. 下采样后的节点位置（包含 object_point, interior point, surface point, controller point）
+                        # 3. Downsampled node positions (including object_point, interior point, surface point, controller point)
                         'vertices': self.m_vertices[self.current_stage].detach().clone(),
                         
-                        # 4. 下采样后的连接关系（边拓扑）
+                        # 4. Downsampled connectivity (edge topology)
                         'edges': self.m_gs[self.current_stage].detach().clone()[:, :num_edge//2],
                         
-                        # 5. 下采样后的节点类型
+                        # 5. Downsampled node types
                         'node_type': self.m_node_type[self.current_stage].detach().clone(),
                         
-                        # 6. 下采样后的节点质量
+                        # 6. Downsampled node masses
                         'masses': self.m_masses[self.current_stage].clone() if isinstance(self.m_masses[self.current_stage], torch.Tensor) else torch.tensor(self.m_masses[self.current_stage], device=cfg.device),
                         
-                        # 7. 下采样后的 GT 数据（gt_vertices 和 visibility）
+                        # 7. Downsampled GT data (gt_vertices and visibility)
                         'gt_vertices': self.m_gt_object_points[self.current_stage].detach().clone(),
                         'gt_visibility': self.m_gt_object_visibilities[self.current_stage].detach().clone(),
                         'gt_motions_valid': self.m_gt_object_motions_valid[self.current_stage].detach().clone(),
                         
-                        # 8. 节点 ID 映射（下采样索引）
+                        # 8. Node ID mapping (downsampling indices)
                         'node_ids': self.m_ids[self.current_stage],
                         'abs_node_ids': self._compute_abs_node_ids(self.current_stage),
                     }
@@ -1399,21 +1464,21 @@ class E2EReductionTrainer:
                     print(f"Previous best: {prev_best:.10f}")
                     print(f"{'='*60}\n")
                     
-                    # 立即保存当前最优的 mech_info，文件名包含 stage_epoch_iter 标签
-                    # 保存到时间戳文件夹下
+                    # Immediately save the current best mech_info; filename contains the stage_epoch_iter tag
+                    # Save under the timestamp folder
                     best_mech_filename = f'stage{self.current_stage}_epoch{epoch}_iter{i}_best_mech_info.pth'
                     best_mech_info_path = os.path.join(self.save_base_dir, 'spring_mech_info', best_mech_filename)
                     torch.save({'mech': complete_stage_info}, best_mech_info_path)
                     logger.info(f"Saved best mech info for stage {self.current_stage} to {best_mech_info_path}")
 
-            # 碰撞参数优化
+            # Collision parameter optimization
             if cfg.collision_learn:
                 print(f"\n{'='*60}")
                 print("Starting collide parameters optimization...")
                 print(f"{'='*60}\n")
                 
-                # [修复] 为当前 stage 的 simulator 优化碰撞参数
-                # 使用 self.current_stage 索引来获取对应的 simulator
+                # [Fix] Optimize collision parameters for the current stage's simulator
+                # Use self.current_stage to index and obtain the corresponding simulator
                 simulator = self.mlvl_simulators[self.current_stage]
                 collide_optimizer = self.mlvl_collide_optimizer[self.current_stage]
                 
@@ -1464,7 +1529,7 @@ class E2EReductionTrainer:
                     avg_loss = np.mean(iter_losses)
                     print(f"Collide iter {opt_iter+1}/5 - Avg Loss: {avg_loss:.10f}")
         else:
-            # 验证模式
+            # Validation mode
             _, _, _, _, _, _, _, loss, chamfer_loss, track_loss = self.generate_data_point_sequence(
                 update_frame_num=self.mdata.train_frame,
                 enable_backward=False,

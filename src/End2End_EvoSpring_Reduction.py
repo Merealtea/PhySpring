@@ -25,8 +25,8 @@ class End2EndReduction_EvoSpring(ModelGeneral):
                                     self.lagrangian, enhance, agg_conv_pos, edge_set_num,
                                     transformer_hidden_dim=128, transformer_num_layers=2, pos_encoding_dim=30)
         
-        # 用于第一层之后预测标量 bias 的 decoder（每层一个独立的 MLP）
-        # 将 edge_feature (1*M*C) 压缩为 1*C，然后预测一个标量
+        # Decoder for predicting the scalar bias after the first layer (one independent MLP per layer)
+        # Compress edge_feature (1*M*C) to 1*C, then predict a scalar
         self.edge_decode = torch.nn.ModuleList([
             MLP(ld, ld, 1, 3, False)
             for _ in range(layer_num)
@@ -43,7 +43,7 @@ class End2EndReduction_EvoSpring(ModelGeneral):
         self.drag_damping_0 = float(default_drag_damping) if default_drag_damping is not None else 0.5
         self.dashpot_damping_0 = float(default_dashpot_damping) if default_dashpot_damping is not None else 0.5
 
-        # --- 新增的四个参数 Decoders ---
+        # --- Added: four parameter decoders ---
         # Learnable damping bias parameters (initialized to 0)
         self.drag_damping_bias = torch.nn.ParameterList([
             torch.nn.Parameter(torch.tensor([0.0], dtype=torch.float32)).to(cfg.device) 
@@ -123,28 +123,28 @@ class End2EndReduction_EvoSpring(ModelGeneral):
     def calculate_proj_L_D(self, P, edge, prev_spring_Y, prev_dashpot_damping, prev_damping):
 
         # ====================================================================
-        # 构建 L_hat, D_hat
+        # Build L_hat, D_hat
         # ====================================================================
-        # 提取上一层的投影矩阵 P 和 边索引
+        # Extract the previous layer's projection matrix P and edge indices
         N_prev = P.shape[0]
         u_prev = edge[0]
         v_prev = edge[1]
 
         prev_spring_Y = torch.cat([prev_spring_Y, prev_spring_Y]) # bidirection
 
-        # 1. 构造上一层的 L_prev
+        # 1. Construct the previous layer's L_prev
         L_prev = torch.zeros((N_prev, N_prev), device=P.device, dtype=P.dtype)
         L_prev[u_prev, v_prev] = -prev_spring_Y
         
-        # 巧妙利用 scatter_add_ 快速计算 Laplacian 对角线（非对角线的相反数之和）
+        # Cleverly use scatter_add_ to quickly compute the Laplacian diagonal (sum of the negatives of off-diagonal entries)
         diag_L = torch.zeros(N_prev, device=P.device, dtype=P.dtype)
         diag_L.scatter_add_(0, u_prev, prev_spring_Y)
         L_prev[torch.arange(N_prev), torch.arange(N_prev)] = diag_L
 
-        # 2. 构造上一层的 D_prev
+        # 2. Construct the previous layer's D_prev
         D_prev = torch.zeros((N_prev, N_prev), device=P.device, dtype=P.dtype)
         
-        # --- 2.1 相对阻尼 (Dashpot) -> 拉普拉斯形式 ---
+        # --- 2.1 Relative damping (Dashpot) -> Laplacian form ---
         if prev_dashpot_damping.numel() == 1:
             dashpot_vec = prev_dashpot_damping.expand(u_prev.size(0))
         else:
@@ -155,27 +155,27 @@ class End2EndReduction_EvoSpring(ModelGeneral):
         diag_dashpot = torch.zeros(N_prev, device=P.device, dtype=P.dtype)
         diag_dashpot.scatter_add_(0, u_prev, dashpot_vec)
 
-        # --- 2.2 绝对阻尼 (Drag) -> 纯对角线形式 ---
+        # --- 2.2 Absolute damping (Drag) -> purely diagonal form ---
         if prev_damping.numel() == 1:
             drag_vec = prev_damping.expand(N_prev)
         else:
             drag_vec = prev_damping
 
-        # Dashpot 的对角线加上 Drag 作为总阻尼对角线
+        # Add the Dashpot diagonal and the Drag to form the total damping diagonal
         D_prev[torch.arange(N_prev), torch.arange(N_prev)] = diag_dashpot + drag_vec
 
         # ====================================================================
-        # 3. [新增] 提取真正的 N x K 降维投影矩阵
+        # 3. [Added] Extract the actual N x K reduced projection matrix
         # ====================================================================
-        # P 目前是 N x N，列和大于 0 的列即为被保留下来的代表节点
-        # 使用 torch.nonzero 找到这些有效列的索引
+        # P is currently N x N; columns with a column sum greater than 0 are the retained representative nodes
+        # Use torch.nonzero to find the indices of these valid columns
         active_cols = torch.nonzero(P.sum(dim=0) > 0).squeeze(-1)
         
-        # 提取出一个形状为 N x K 的投影矩阵
+        # Extract a projection matrix of shape N x K
         P_reduced = P[:, active_cols]
 
         # ====================================================================
-        # 4. 伽辽金投影得到本层的 L_hat 和 D_hat (此时为 K x K)
+        # 4. Galerkin projection to obtain this layer's L_hat and D_hat (now K x K)
         # ====================================================================
         L_hat = P_reduced.T @ L_prev @ P_reduced
         D_hat = P_reduced.T @ D_prev @ P_reduced
@@ -204,7 +204,7 @@ class End2EndReduction_EvoSpring(ModelGeneral):
                 prev_damping = prev_best_mech_info[lvl-1]["drag_damping"]
                 prev_dashpot_damping = prev_best_mech_info[lvl-1]["dashpot_damping"]
 
-                # 构建L_hat, D_hat
+                # Build L_hat, D_hat
                 L_hat, D_hat = self.calculate_proj_L_D(downsample_results['down_proj'][lvl-1], downsample_results['down_gs'][lvl-1],
                                                        prev_spring_Y, prev_dashpot_damping, prev_damping)
 
@@ -216,7 +216,7 @@ class End2EndReduction_EvoSpring(ModelGeneral):
                 drag_array = torch.sum(D_hat, axis=1)
                 new_drag_basis = self.drag_damping_0 # torch.mean(drag_array)
 
-                # 将提取的参数转为 Tensor 保存
+                # Convert the extracted parameters to Tensors and save them
                 drag_damping_out = new_drag_basis + self.drag_damping_bias[lvl] * 100
                 dashpot_damping_out = new_dashpot_basis + self.dashpot_damping_bias[lvl] * 100
                 s_out = ((spring_Y_basis + edge_mech_in_bias * 1e3))

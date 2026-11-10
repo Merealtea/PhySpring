@@ -179,7 +179,7 @@ class amp(MessagePassing):
         logits = torch.mean(logits, axis=0)
         
         hard = True
-        y_soft, y_hard = gumbel_softmax(logits, temp, hard=hard)  # tau越小越接近one-hot
+        y_soft, y_hard = gumbel_softmax(logits, temp, hard=hard)  # the smaller tau, the closer to one-hot
 
         return self.mlp_node_delta(tmp) + x, edge_weight, y_hard
 

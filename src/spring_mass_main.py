@@ -1,5 +1,4 @@
 import argparse
-from spring_mass_trainer import SpringMassTrainer
 import torch
 import os
 from enum import Enum
@@ -58,6 +57,7 @@ def getargs():
     parser.add_argument('-train_frame', type=int, default=-1, help='frames used for mechanical info estimation')
     parser.add_argument('-test_frame', type=int, default=-1, help='frames used for mechanical info examination')
     parser.add_argument('-reduction', type=str, help='Applicable Reduction Methods: learnable, reduction_order, random')
+    parser.add_argument('-init_spring_Y', type=float, default=None, help='initial spring stiffness (overrides cfg.init_spring_Y)')
     args, _ = parser.parse_known_args()
     return args
 
@@ -74,11 +74,15 @@ def seed_everything(seed):
 if __name__ == "__main__":
     seed_everything(0)
     args = getargs()
+
     args.consist_mesh = bool(args.consist_mesh)
     args.dump_dir = os.path.join(args.dump_dir, args.object_case)
     print(args)
 
     device = torch.device("cuda", args.local_rank)
+    # Make the selected GPU the default one, so any tensor allocated on the
+    # generic "cuda" device (e.g. in gs_render) also lands on this GPU.
+    torch.cuda.set_device(device)
 
     wp.init()
 
@@ -89,20 +93,11 @@ if __name__ == "__main__":
         wp.config.verify_autograd_array_access = True
     print("device", device)
 
-    if args.case == 'spring_mass':
-        trainer = SpringMassTrainer(args, device)
-    elif args.case == 'neural_spring_field':
-        from NSF_trainer import NSFTrainer
-        trainer = NSFTrainer(args, device)
-    elif args.case == 'evospring':
-        from EvoSpring_trainer import EvoSpringTrainer
-        trainer = EvoSpringTrainer(args, device)
-    elif args.case == 'End2End':
-        from End2End_trainer import E2ETrainer
-        trainer = E2ETrainer(args, device)
-    elif args.case == 'End2End_Reduction':
+    if args.case == 'End2End_Reduction':
         from End2End_Reduction_trainer import E2EReductionTrainer
         trainer = E2EReductionTrainer(args, device)
+    else:
+        raise NotImplementedError(f"Unsupported case: {args.case}")
     
     if MODE(args.mode) == MODE.Train:
         print('Train')

@@ -15,14 +15,14 @@ def load_pickle(path):
 
 def compute_normalization_info(data_dict):
     """
-    计算每个字段的 Mean 和 Std。
+    Compute the Mean and Std of each field.
     """
     norm_info = {}
     for name, data in data_dict.items():
         if name == 'cells' or name == 'node_type' or name == 'init_spring_Y':
-            continue  # 跳过非浮点数据
+            continue  # Skip non-float data
         data_float = data.astype(np.float64)
-        # 对 (T, N, C) 数据，沿着 T 和 N 聚合 (0, 1)
+        # For (T, N, C) data, aggregate along T and N (0, 1)
         if data.ndim >= 2:
             axis = tuple(range(data.ndim - 1))
         else:
@@ -48,13 +48,13 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     print(f"--- 开始处理 Optimization 数据 ---")
     
     # ==============================
-    # 1. 读取数据
+    # 1. Read data
     # ==============================
     print(f"读取数据: {opt_pkl_path}")
     
     zero_grad_opt_data = load_pickle(opt_pkl_path)
 
-    # 获取两组点云 (T, N, 3)
+    # Get the two point clouds (T, N, 3)
     # Original object points captured by Depth Camera
     object_points = zero_grad_opt_data['object_points']
     # Controller points captured by Depth Camera
@@ -92,25 +92,25 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     print(f"合并后 World Pos: {first_frame_structure_point.shape}")
 
     # ==============================
-    # 2. 读取图参数
+    # 2. Read graph parameters
     # ==============================
     print(f"读取参数: {connect_params_pkl_path}")
     connect_params = load_pickle(connect_params_pkl_path)
     
-    # Object-Object 参数
+    # Object-Object parameters
     obj_radius = connect_params['object_radius']
     obj_max_nn = connect_params['object_max_neighbours']
 
-    # Controller-Object 参数
+    # Controller-Object parameters
     ctrl_radius = connect_params['controller_radius']
     ctrl_max_nn = connect_params['controller_max_neighbours']
  
-    # dashdot_damping 参数
+    # dashdot_damping parameters
     dashpot_damping = connect_params['dashpot_damping']
     drag_damping = connect_params['drag_damping']
     global_spring_Y = connect_params['global_spring_Y']
 
-    # collide 参数
+    # collide parameters
     collide_elas = connect_params['collide_elas']
     collide_fric = connect_params['collide_fric']
     collide_object_elas = connect_params['collide_object_elas']
@@ -121,17 +121,17 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     print(f"Ctrl-Obj 参数: R={ctrl_radius}, Max={ctrl_max_nn}")
 
     # ==============================
-    # 3. 构建混合图 (基于第0帧)
+    # 3. Build the hybrid graph (based on frame 0)
     # ==============================
     print("正在构建静态图连接 (Frame 0)...")
     
-    # 获取第0帧数据
+    # Get frame 0 data
     obj_p0 = first_frame_structure_point.astype(np.float64)
     ctrl_p0 = controller_points[0].astype(np.float64)
     
-    # --- 核心逻辑 ---
-    # 我们只对 Object 建立 KDTree，因为无论是 Object 还是 Controller，
-    # 都是去寻找周围的 Object 建立连接 (参考 trainer_warp 逻辑)
+    # --- Core logic ---
+    # We only build a KDTree for Object, because both Object and Controller
+    # search for surrounding Objects to establish connections (see trainer_warp logic)
     
     pcd_obj = o3d.geometry.PointCloud()
     pcd_obj.points = o3d.utility.Vector3dVector(obj_p0)
@@ -161,9 +161,9 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
                 edges_list.append([i, j])
                 rest_lengths.append(np.linalg.norm(points[i] - points[j]))
 
-    # Part B: Controller 连接 Object (src: Controller -> dst: Object)
-    # Controller 的全局索引从 N_obj 开始
-    # 索引范围: N_obj ~ N_total-1
+    # Part B: Controller connects to Object (src: Controller -> dst: Object)
+    # The Controller's global index starts from N_obj
+    # Index range: N_obj ~ N_total-1
     num_object_points = len(points)
     points = np.concatenate([points, ctrl_p0], axis=0)
     for i in range(len(ctrl_p0)):
@@ -178,7 +178,7 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
                 np.linalg.norm(ctrl_p0[i] - points[j])
             )
 
-    # 转为 Numpy
+    # Convert to Numpy
     if len(edges_list) > 0:
         base_edges = np.array(edges_list, dtype=np.int32)
     else:
@@ -189,13 +189,13 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     print(f"生成边总数 (K): {K}")
 
     # ==============================
-    # 4. 读取优化前的机械属性初始估计
+    # 4. Read the initial mechanical property estimates before optimization
     # ==============================
 
     print(f"读取初始机械属性估计: {connect_params_pkl_path}")
 
     # ==============================
-    # 4. 读取优化后的机械属性
+    # 4. Read the optimized mechanical properties
     # ==============================
     print(f"读取机械属性: {mech_file}")
     
@@ -203,21 +203,21 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
 
     spring_property = opt_spring['spring_Y'].numpy().astype(np.float32)
 
-    # assert K == spring_property.shape[0], "边数量与机械属性不匹配！"
+    # assert K == spring_property.shape[0], "Number of edges does not match mechanical properties!"
     # ==============================
-    # 5. 组装数据字典
+    # 5. Assemble the data dict
     # ==============================
     
     # 1. World Pos (Float32)
     data_pos = world_pos.astype(np.float32)
-    mesh_pos = np.concatenate([first_frame_structure_point, controller_points[0]], axis=0)[None].repeat(T, axis=0)  # Mesh Pos 只用第0帧位置，形状 (T, N_total, 3)
+    mesh_pos = np.concatenate([first_frame_structure_point, controller_points[0]], axis=0)[None].repeat(T, axis=0)  # Mesh Pos uses only frame 0 positions, shape (T, N_total, 3)
 
     # 2. Cells (Int32, Tile to T frames)
-    data_cells = np.tile(base_edges[np.newaxis, :, :], (T, 1, 1)).transpose(0, 2, 1)  # 形状 (T, 2, K)
+    data_cells = np.tile(base_edges[np.newaxis, :, :], (T, 1, 1)).transpose(0, 2, 1)  # Shape (T, 2, K)
     
     # 3. Node Type (Int32)
-    # 根据要求: Object设为0, Controller设为0
-    # 形状 (T, N_total, 1)
+    # As required: Object is set to 0, Controller is set to 0
+    # Shape (T, N_total, 1)
     # Measured object is type 0, surface points is type 1, 
     # interior points is type 2, controller points is type 3
     data_node_type = np.zeros((T, N_total, 1), dtype=np.int32)
@@ -225,7 +225,7 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     data_node_type[:, N_obj + N_surface: N_obj + N_surface + N_interior, :] = 2 
     data_node_type[:, N_obj + N_surface + N_interior:, :] = 3 
 
-    # 4. Particle Speed (Float32) 形状 (T, N_total, 3), 默 认为0
+    # 4. Particle Speed (Float32), shape (T, N_total, 3), defaults to 0
     data_speed = np.zeros((T, N_total, 3), dtype=np.float32)
 
     # 5. masses
@@ -234,7 +234,7 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
 
     print("Max reset_length :{}, Min reset_length : {}".format(rest_lengths.max(), rest_lengths.min()))
 
-    # 汇总
+    # Assemble
     data_dict = {
         "world_pos": data_pos,
         "object_points" : object_points,
@@ -254,7 +254,7 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     }
 
     # ==============================
-    # 5. 计算 Normalization 并保存
+    # 5. Compute Normalization and save
     # ==============================
     print("计算 Normalization Info...")
     normalization_info = compute_normalization_info(data_dict)
@@ -265,17 +265,17 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     normalization_info['velocities']['mean'] = [0]
     normalization_info['velocities']['std'] = [1]
     
-    # 写入 H5
+    # Write H5
     print(f"写入 H5: {output_h5_path}")
     with h5py.File(output_h5_path, 'w') as f:
         for name, data in data_dict.items():
             f.create_dataset(name, data=data)
         
-        # # 保存参数属性
+        # # Save parameter attributes
         # f['cells'].attrs['obj_radius'] = obj_radius
         # f['cells'].attrs['ctrl_radius'] = ctrl_radius
 
-    # 写入 JSON
+    # Write JSON
     print(f"写入 Meta JSON: {output_json_path}")
     fps = 30.0
 
@@ -325,7 +325,7 @@ def create_optimization_dataset(opt_pkl_path, connect_params_pkl_path, mech_file
     print("--- 处理完成 ---")
 
 if __name__ == "__main__":
-    # 配置文件路径
+    # Configuration file paths
     object_cases = os.listdir('./data/different_types')
     opt_file_path = './data/different_types'
     param_file_path = './experiments_optimization'
