@@ -93,10 +93,10 @@ Follow the readme in [Real2sim-extent repo](https://github.com/Merealtea/Real2si
 ```
 @inproceedings{physpring,
     title={Physpring: Differentiable Spring-Mass Simulation for Estimating Mechanical Properties of Deformable Objects},
-    author={TODO},
-    booktitle={TODO},
-    year={TODO},
-    url={TODO},
+    author={Jing, Yixiong and Chen, Xingyuan and Wang, Guangming and Wysocki, Olaf and Wu, Haibing and Sheil, Brian},
+    booktitle={NeurIPS},
+    year={2026},
+    url={https://arxiv.org/abs/2605.07687},
 }
 ```
 
