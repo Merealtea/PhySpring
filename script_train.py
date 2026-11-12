@@ -59,7 +59,7 @@ with open(CONFIG_FILE, "r") as f:
             value = value.strip().strip("'\"")
             config[key] = value
 
-base_path = "./evomesh_optimization_outputs"
+base_path = "./data/different_types"
 res_path = f"./res/{case}"
 init_physical_settings = "./configs/initial_training_settings.json"
 # load initial physical setting here
@@ -76,7 +76,7 @@ dir_names = os.listdir(base_path)
 exclusive_cases = []
 finished_cases = os.listdir(res_path)
 
-dir_names = ['weird_package'] #, 'double_lift_zebra', 'rope_double_hand']
+# dir_names = ['weird_package'] #, 'double_lift_zebra', 'rope_double_hand']
 
 # Real2sim Cases
 for idx, case_name in enumerate(dir_names):

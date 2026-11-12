@@ -42,12 +42,6 @@ PhySpring/
 └── ...
 ```
 
-Then transfer data for the PhySpring model input format in 'evomesh_optimization_outputs' folder
-```bash
-python ./tools/phystwin_2_evomesh.py
-
-```
-
 ## Training
 
 Train all scenes and the result will be stored in './res/End2End_Reduction'

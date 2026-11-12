@@ -11,6 +11,6 @@ num_epochs=20
 batch=1
 lr=3e-4
 gamma=0.9
-data_dir='./evomesh_optimization_outputs'
+data_dir='./data/different_types'
 dump_dir='./res/End2End_Reduction/'
 reduction='learnable'
